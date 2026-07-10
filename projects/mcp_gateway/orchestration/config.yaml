@@ -34,15 +34,20 @@ caliper:
       enabled: false
     kpi:
       enabled: true
-      generate:
+      artifacts_to_kpis:
         enabled: true
-        output: kpis.json
-      export:
+        output: kpis/kpis.json
+      kpis_to_csv:
         enabled: false
+        output: kpis/kpis.csv
+        include_header_comments: true
+      artifacts_to_ai_data:
+        enabled: false
+        output_dir: ai_data
     analyze:
-      enabled: false
-      baseline: null
-      output: kpi_analyze.json
+      enabled: true
+      historical_kpis: ../historical_data
+      output: regression_analyze/kpi_analyze.json
 
   export:
     from: null

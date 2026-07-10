@@ -117,6 +117,9 @@ def do_test() -> int:
 
     write_json(env.ARTIFACT_DIR / "test_summary.json", summary)
 
+    from projects.mcp_gateway.postprocess.mcp_gateway.historical_data import populate_historical_data
+    populate_historical_data()
+
     return 0
 
 

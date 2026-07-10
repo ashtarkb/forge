@@ -25,6 +25,7 @@ def populate_historical_data(max_runs: int = 10) -> None:
     """
     try:
         output_dir = Path(env.BASE_ARTIFACT_DIR) / "historical_data"
+        output_dir.mkdir(parents=True, exist_ok=True)
         count = write_historical_kpis(
             output_dir=output_dir,
             kpi_to_mlflow_metric=KPI_TO_MLFLOW_METRIC,
@@ -33,6 +34,6 @@ def populate_historical_data(max_runs: int = 10) -> None:
         if count:
             logger.info("Populated %d historical KPI entries for regression analysis", count)
         else:
-            logger.info("No historical KPI data found in MLflow")
+            logger.info("No historical KPI data found in MLflow (directory created empty)")
     except Exception as e:
         logger.warning("Failed to populate historical data (non-fatal): %s", type(e).__name__)

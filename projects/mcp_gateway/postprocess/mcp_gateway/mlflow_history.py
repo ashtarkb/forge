@@ -555,7 +555,7 @@ def _write_regular_history(
     """
     count = 0
     seen_versions: set[str] = set()
-    required_kpis = set(mlflow_to_kpi.keys())
+    required_kpis = set(mlflow_to_kpi.values())
 
     for run in runs:
         if count >= max_runs:
@@ -623,7 +623,7 @@ def _write_matrix_history(
     counters: dict[str, int] = {}
     parents_found = 0
     seen_versions: set[str] = set()
-    required_kpis = set(mlflow_to_kpi.keys())
+    required_kpis = set(mlflow_to_kpi.values())
 
     for run in runs:
         if parents_found >= max_runs:

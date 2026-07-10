@@ -516,21 +516,47 @@ def write_historical_kpis(
         return 0
 
 
-def _kpi_metrics_to_kpis_json(metrics: dict[str, float]) -> dict:
-    """Convert already-mapped KPI metrics to caliper kpis.json format.
+def _kpi_metrics_to_kpis_json(metrics: dict[str, float], run_name: str = "", params: dict | None = None) -> dict:
+    """Convert already-mapped KPI metrics to caliper kpis.json schema v2 format.
 
-    Expects metrics already keyed by KPI id (output of _extract_kpi_metrics).
+    Produces output compatible with caliper's analyze step which requires
+    schema_version "2".
     """
     kpi_records = [{"id": kpi_id, "value": value} for kpi_id, value in metrics.items()]
-    return {"tests": [{"kpis": kpi_records}]}
+
+    labels = {}
+    if params:
+        for key in ("preset", "target", "users", "num_servers", "mock_server",
+                    "mcp_gateway_version", "tools_per_server"):
+            if key in params:
+                labels[key] = str(params[key])
+
+    test_entry: dict[str, Any] = {
+        "run_id": run_name or "historical",
+        "labels": labels,
+        "kpis": kpi_records,
+    }
+
+    return {
+        "schema_version": "2",
+        "tests": [test_entry],
+    }
 
 
 def _write_regular_history(
     runs, output_dir, current_run, current_parsed, current_preset,
     mlflow_to_kpi, max_runs,
 ) -> int:
-    """Write historical KPI files for regular (non-matrix) runs."""
+    """Write historical KPI files for regular (non-matrix) runs.
+
+    Only includes runs where ALL expected KPI metrics are present.
+    Deduplicates by version -- keeps only the most recent run per version
+    (runs are already ordered by start_time DESC from MLflow).
+    """
     count = 0
+    seen_versions: set[str] = set()
+    required_kpis = set(mlflow_to_kpi.keys())
+
     for run in runs:
         if count >= max_runs:
             break
@@ -550,11 +576,23 @@ def _write_regular_history(
         if candidate_parsed["version"] == current_parsed["version"]:
             continue
 
+        version = candidate_parsed["version"]
+        if version and version in seen_versions:
+            continue
+        if version:
+            seen_versions.add(version)
+
         kpi_metrics = _extract_kpi_metrics(run, mlflow_to_kpi)
         if not kpi_metrics:
             continue
+        if required_kpis and not required_kpis.issubset(kpi_metrics.keys()):
+            logger.info("Skipping run '%s': incomplete KPIs (has %d/%d)",
+                        candidate_name, len(kpi_metrics), len(required_kpis))
+            continue
 
-        kpis_data = _kpi_metrics_to_kpis_json(kpi_metrics)
+        run_name = _get_run_name(run)
+        run_params = run.data.params or {}
+        kpis_data = _kpi_metrics_to_kpis_json(kpi_metrics, run_name=run_name, params=run_params)
         run_dir = output_dir / f"run_{count:03d}"
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "kpis.json").write_text(json.dumps(kpis_data, indent=2))
@@ -575,11 +613,17 @@ def _write_matrix_history(
         output_dir/<config>/run_001/kpis.json
         ...
 
+    Only includes child runs where ALL expected KPI metrics are present.
+    Deduplicates parent runs by version -- keeps only the most recent parent
+    per version (runs are already ordered by start_time DESC from MLflow).
+
     This ensures regression analysis only compares data points
     from the same load configuration.
     """
     counters: dict[str, int] = {}
     parents_found = 0
+    seen_versions: set[str] = set()
+    required_kpis = set(mlflow_to_kpi.keys())
 
     for run in runs:
         if parents_found >= max_runs:
@@ -599,6 +643,12 @@ def _write_matrix_history(
         if candidate_parsed["version"] == current_parsed["version"]:
             continue
 
+        version = candidate_parsed["version"]
+        if version and version in seen_versions:
+            continue
+        if version:
+            seen_versions.add(version)
+
         children = _get_child_runs(client, experiment_id, run.info.run_id)
         for child in children:
             child_name = _get_run_name(child)
@@ -610,8 +660,14 @@ def _write_matrix_history(
             kpi_metrics = _extract_kpi_metrics(child, mlflow_to_kpi)
             if not kpi_metrics:
                 continue
+            if required_kpis and not required_kpis.issubset(kpi_metrics.keys()):
+                logger.info("Skipping child '%s': incomplete KPIs (has %d/%d)",
+                            child_name, len(kpi_metrics), len(required_kpis))
+                continue
 
-            kpis_data = _kpi_metrics_to_kpis_json(kpi_metrics)
+            child_run_name = _get_run_name(child)
+            child_params = child.data.params or {}
+            kpis_data = _kpi_metrics_to_kpis_json(kpi_metrics, run_name=child_run_name, params=child_params)
 
             cfg_count = counters.get(cfg, 0)
             run_dir = output_dir / cfg / f"run_{cfg_count:03d}"

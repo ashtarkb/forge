@@ -24,7 +24,7 @@ def populate_historical_data(max_runs: int = 10) -> None:
     the caliper analyze step can find them via ../historical_data relative path.
     """
     try:
-        output_dir = Path(env.ARTIFACT_BASE_DIR) / "historical_data"
+        output_dir = Path(env.BASE_ARTIFACT_DIR) / "historical_data"
         count = write_historical_kpis(
             output_dir=output_dir,
             kpi_to_mlflow_metric=KPI_TO_MLFLOW_METRIC,

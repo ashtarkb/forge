@@ -3,6 +3,7 @@ vaults:
   all-optional:
   - psap-forge-notifications
   - psap-forge-mlflow-export
+  - psap-forge-aws-s3-export
   prepare: []
   test: []
 
@@ -34,15 +35,43 @@ caliper:
       enabled: false
     kpi:
       enabled: true
-      generate:
+      artifacts_to_kpis:
         enabled: true
-        output: kpis.json
-      export:
+        output: kpis/kpis.json
+      kpis_to_csv:
+        enabled: true
+        output: kpis/kpis.csv
+        include_header_comments: true
+      artifacts_to_ai_data:
         enabled: false
+        output_dir: ai_data
+
     analyze:
-      enabled: false
-      baseline: null
-      output: kpi_analyze.json
+      enabled: true
+      historical_kpis: historical_data
+      output: regression_analyze/kpi_analyze.json
+
+    s3:
+      bucket: mcp-gateway-cpt-data
+      instance: nightly
+      directory: mcp-gateway-cpt-data
+      vault:
+        name: psap-forge-aws-s3-export
+        aws_credentials_file: aws.credentials
+      import:
+        enabled: true
+        output_dir: historical_data
+        include_kpis_json: true
+        include_kpis_csv: true
+        include_ai_data: false
+        max_downloads: 50
+      export:
+        enabled: true
+        upload_id: null
+        dry_run: false
+        include_csv: true
+        include_kpis_json: true
+        include_ai_data: false
 
   export:
     from: null

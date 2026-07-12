@@ -1,9 +1,7 @@
 """
 Per-project Slack notification provider for MCP Gateway.
 
-Sends structured performance summaries with KPI comparison against the
-previous MLflow run. Reuses shared helpers from the core notification
-framework.
+Sends structured performance summaries with current KPI results.
 
 Channel ID is read from the project's config.yaml at
 ``notifications.slack.channel_id``.
@@ -14,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
+from pathlib import Path
 
 from projects.core.library import config
 from projects.core.notifications.helpers import (
@@ -36,53 +34,6 @@ TARGET_KPIS = [
     ("mcp_gw_p99_ms", "P99 latency", "ms"),
     ("mcp_gw_failure_rate", "Failure rate", "%"),
 ]
-
-# Mapping from kpis.jsonl IDs to MLflow metrics.json keys (logged via mlflow.log_metric)
-_KPI_TO_MLFLOW_METRIC = {
-    "mcp_gw_requests_per_second": "requests_per_second",
-    "mcp_gw_p95_ms": "p95_ms",
-    "mcp_gw_p99_ms": "p99_ms",
-    "mcp_gw_failure_rate": "failure_rate",
-}
-
-_RUN_NAME_PREFIX = "forge-mcp-gateway-"
-
-
-def _parse_run_name(run_name: str) -> dict | None:
-    """Parse a forge-mcp-gateway run name into components.
-
-    Expected formats:
-      forge-mcp-gateway-s150-u500-vsha-<hash>-YYYYMMDD-HHMMSS
-      forge-mcp-gateway-s150-u500-v0.7.0-YYYYMMDD-HHMMSS
-      forge-mcp-gateway-0.5.1-YYYYMMDD-HHMMSS
-
-    Returns dict with keys: config, is_sha, version — or None if unparseable.
-    """
-    if not run_name.startswith(_RUN_NAME_PREFIX):
-        return None
-
-    rest = run_name[len(_RUN_NAME_PREFIX) :]
-
-    config = None
-    config_match = re.match(r"(s\d+-u\d+)-", rest)
-    if config_match:
-        config = config_match.group(1)
-        rest = rest[config_match.end() :]
-
-    is_sha = False
-    version = None
-
-    if rest.startswith("vsha-"):
-        is_sha = True
-        sha_match = re.match(r"vsha-([a-f0-9]+)-\d{8}-\d{6}$", rest)
-        if sha_match:
-            version = sha_match.group(1)
-    else:
-        version_match = re.match(r"v?(.+?)-\d{8}-\d{6}$", rest)
-        if version_match:
-            version = version_match.group(1)
-
-    return {"config": config, "is_sha": is_sha, "version": version}
 
 
 class MCPGatewaySlackProvider(SlackNotificationProvider):
@@ -143,27 +94,20 @@ def _format_metadata(context: NotificationContext) -> str:
 
 
 def _format_kpi_table(context: NotificationContext) -> str:
-    """Build comparison table: current KPIs vs previous MLflow run."""
+    """Build KPI comparison table using historical data from S3.
+
+    If historical data is available, shows a comparison table with deltas.
+    Falls back to a simple current KPI list if no history is found.
+    """
     current_kpis = _load_current_kpis(context)
     if not current_kpis:
         return ""
 
-    # Extract current run_id from export status to avoid race with parallel jobs
-    current_run_id = None
-    if isinstance(context.status, dict):
-        backends = context.status.get("caliper_artifacts_export", {}).get("backends", {})
-        current_run_id = backends.get("mlflow", {}).get("run_id")
-
-    previous_kpis, previous_run_name, skip = _load_previous_kpis_from_mlflow(current_run_id)
-
-    if skip:
-        context.extra["_skip_notification"] = True
-        return ""
-
+    previous_kpis, prev_run_name = _load_previous_kpis(context)
     if previous_kpis:
-        return build_comparison_table(current_kpis, previous_kpis, previous_run_name, TARGET_KPIS)
-    else:
-        return build_current_kpis_list(current_kpis, TARGET_KPIS)
+        return build_comparison_table(current_kpis, previous_kpis, prev_run_name, TARGET_KPIS)
+
+    return build_current_kpis_list(current_kpis, TARGET_KPIS)
 
 
 def _format_standard_links(context: NotificationContext) -> str:
@@ -213,16 +157,8 @@ def _find_kpis_json(artifact_dir):
     return None
 
 
-def _load_current_kpis(context: NotificationContext) -> dict[str, float]:
-    """Read KPI values from kpis.json in the artifact directory."""
-    test_root = get_test_artifacts_root(context)
-    if not test_root:
-        return {}
-
-    kpis_file = _find_kpis_json(test_root)
-    if not kpis_file:
-        return {}
-
+def _extract_kpis_from_file(kpis_file: Path) -> dict[str, float]:
+    """Extract target KPI values from a kpis.json file."""
     target_ids = {k[0] for k in TARGET_KPIS}
     kpis: dict[str, float] = {}
 
@@ -242,149 +178,93 @@ def _load_current_kpis(context: NotificationContext) -> dict[str, float]:
     return kpis
 
 
-def _load_previous_kpis_from_mlflow(
-    current_run_id: str | None = None,
-) -> tuple[dict[str, float], str, bool]:
-    """Query MLflow for the previous matching run's metrics.
+def _load_current_kpis(context: NotificationContext) -> dict[str, float]:
+    """Read KPI values from kpis.json in the artifact directory."""
+    test_root = get_test_artifacts_root(context)
+    if not test_root:
+        return {}
 
-    Args:
-        current_run_id: MLflow run ID of this notification's run. When provided
-            the current run is located by ID (avoids races with parallel jobs).
+    kpis_file = _find_kpis_json(test_root)
+    if not kpis_file:
+        return {}
 
-    Matching rules:
-    - Same load config (e.g. s150-u500)
-    - Same version type (SHA-based compared only to SHA-based, release to release)
-    - Same preset parameter value
+    return _extract_kpis_from_file(kpis_file)
 
-    Returns (metrics_dict, run_name, skip_notification):
-    - skip_notification is True when the previous matching run has the same
-      version/SHA (duplicate run, notification already sent).
-    """
+
+def _get_current_version() -> str:
+    """Get the MCP Gateway version of the current run."""
+    version = os.environ.get("MCP_GATEWAY_VERSION", "")
+    if not version:
+        version = os.environ.get("MCP_GW_VERSION", "")
+    return version
+
+
+def _get_version_from_kpis_json(kpis_file: Path) -> str | None:
+    """Extract mcp_gateway_version from a kpis.json file's labels."""
     try:
-        from projects.caliper.engine.file_export.mlflow_secrets import (
-            load_mlflow_secrets_yaml,
-            mlflow_connection_env,
-        )
-        from projects.core.library import vault as vault_lib
-
-        vault_name = config.project.get_config(
-            "caliper.export.backend.mlflow.secrets.vault.name", None, print=False, warn=False
-        )
-        vault_secret = config.project.get_config(
-            "caliper.export.backend.mlflow.secrets.vault.mlflow_secret",
-            None,
-            print=False,
-            warn=False,
-        )
-        experiment_name = config.project.get_config(
-            "caliper.export.backend.mlflow.config.experiment", None, print=False, warn=False
-        )
-
-        if not all([vault_name, vault_secret, experiment_name]):
-            logger.info("MLflow config incomplete, skipping comparison")
-            return {}, "", False
-
-        secrets_path = vault_lib.get_vault_content_path(vault_name, vault_secret)
-        if not secrets_path or not secrets_path.exists():
-            logger.info("MLflow secrets not available, skipping comparison")
-            return {}, "", False
-
-        secrets = load_mlflow_secrets_yaml(secrets_path)
-
-        with mlflow_connection_env(secrets):
-            import mlflow
-
-            client = mlflow.tracking.MlflowClient()
-            exp = client.get_experiment_by_name(experiment_name)
-            if not exp:
-                logger.info("MLflow experiment '%s' not found", experiment_name)
-                return {}, "", False
-
-            runs = client.search_runs(
-                experiment_ids=[exp.experiment_id],
-                order_by=["start_time DESC"],
-                max_results=50,
-            )
-
-            if len(runs) < 2:
-                logger.info("No previous MLflow run found for comparison")
-                return {}, "", False
-
-            # Locate the current run explicitly by ID when available
-            current_run = None
-            if current_run_id:
-                for run in runs:
-                    if run.info.run_id == current_run_id:
-                        current_run = run
-                        break
-                if current_run is None:
-                    logger.info(
-                        "Current run_id '%s' not found in recent runs, falling back to runs[0]",
-                        current_run_id,
-                    )
-            if current_run is None:
-                current_run = runs[0]
-
-            current_name = getattr(current_run.info, "run_name", "") or current_run.info.run_id[:8]
-            current_parsed = _parse_run_name(current_name)
-            current_preset = (current_run.data.params or {}).get("preset", "")
-
-            if not current_parsed:
-                logger.info("Cannot parse current run name '%s', skipping comparison", current_name)
-                return {}, "", False
-
-            # Find previous run matching: same config, same type, same preset
-            previous_run = None
-            for run in runs:
-                if run.info.run_id == current_run.info.run_id:
-                    continue
-                candidate_name = getattr(run.info, "run_name", "") or run.info.run_id[:8]
-                candidate_parsed = _parse_run_name(candidate_name)
-                if not candidate_parsed:
-                    continue
-
-                if candidate_parsed["config"] != current_parsed["config"]:
-                    continue
-                if candidate_parsed["is_sha"] != current_parsed["is_sha"]:
-                    continue
-
-                candidate_preset = (run.data.params or {}).get("preset", "")
-                if candidate_preset != current_preset:
-                    continue
-
-                previous_run = run
-                break
-
-            if previous_run is None:
-                logger.info(
-                    "No previous run matches config=%s, is_sha=%s, preset=%s",
-                    current_parsed["config"],
-                    current_parsed["is_sha"],
-                    current_preset,
-                )
-                return {}, "", False
-
-            prev_name = getattr(previous_run.info, "run_name", "") or previous_run.info.run_id[:8]
-            prev_parsed = _parse_run_name(prev_name)
-
-            # Check for duplicate: same version/SHA means already notified
-            if prev_parsed and prev_parsed["version"] == current_parsed["version"]:
-                logger.info(
-                    "Previous matching run has same version '%s', skipping notification",
-                    current_parsed["version"],
-                )
-                return {}, "", True
-
-            raw_metrics = previous_run.data.metrics or {}
-            mlflow_to_kpi = {v: k for k, v in _KPI_TO_MLFLOW_METRIC.items()}
-            metrics = {}
-            for mlflow_key, value in raw_metrics.items():
-                kpi_id = mlflow_to_kpi.get(mlflow_key)
-                if kpi_id:
-                    metrics[kpi_id] = value
-
-            return metrics, prev_name, False
-
+        with open(kpis_file) as f:
+            data = json.load(f)
+        for test in data.get("tests", []):
+            labels = test.get("labels", {})
+            version = labels.get("mcp_gateway_version")
+            if version:
+                return str(version)
     except Exception as e:
-        logger.warning("MLflow comparison unavailable: %s", e)
-        return {}, "", False
+        logger.debug("Could not extract version from %s: %s", kpis_file, e)
+    return None
+
+
+def _load_previous_kpis(context: NotificationContext) -> tuple[dict[str, float], str]:
+    """Load the most recent historical KPIs from a *different* version.
+
+    After S3 import, historical kpis.json files are stored at:
+        {artifact_dir}/historical_data/{upload_id}/kpis.json
+
+    The upload_id is a timestamp (e.g. "25-07-12_143021_123"), so sorting
+    the directories in reverse gives us the most recent previous run.
+
+    To provide meaningful comparisons, this function skips historical runs
+    that have the same mcp_gateway_version as the current run. This avoids
+    noise from comparing e.g. v0.7.0 against v0.7.0.
+
+    Returns:
+        Tuple of (kpi_values_dict, run_name_string).
+        Returns ({}, "") if no historical data is available.
+    """
+    test_root = get_test_artifacts_root(context)
+    if not test_root:
+        return {}, ""
+
+    historical_dir = test_root / "historical_data"
+    if not historical_dir.exists():
+        logger.info("No historical_data directory found at %s", historical_dir)
+        return {}, ""
+
+    historical_kpi_files = sorted(historical_dir.glob("*/kpis.json"), reverse=True)
+    if not historical_kpi_files:
+        logger.info("No historical kpis.json files found in %s", historical_dir)
+        return {}, ""
+
+    current_version = _get_current_version()
+
+    for kpis_file in historical_kpi_files:
+        if current_version:
+            hist_version = _get_version_from_kpis_json(kpis_file)
+            if hist_version and hist_version == current_version:
+                logger.debug(
+                    "Skipping %s (same version: %s)", kpis_file.parent.name, hist_version
+                )
+                continue
+
+        run_name = kpis_file.parent.name
+        hist_version = _get_version_from_kpis_json(kpis_file)
+        if hist_version:
+            run_name = f"{hist_version} ({run_name})"
+
+        logger.info("Using historical data from run: %s", run_name)
+        kpis = _extract_kpis_from_file(kpis_file)
+        if kpis:
+            return kpis, run_name
+
+    logger.info("No historical data from a different version found")
+    return {}, ""

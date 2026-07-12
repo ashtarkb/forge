@@ -109,13 +109,15 @@ def analyze_kpis(
             continue
 
         findings = _compare_kpis(current_test, baseline)
-        all_findings.append({
-            "load_config": current_test.config.load_config,
-            "preset": current_test.config.preset,
-            "current_version": current_test.config.version,
-            "baseline_version": baseline.config.version,
-            "kpis": findings,
-        })
+        all_findings.append(
+            {
+                "load_config": current_test.config.load_config,
+                "preset": current_test.config.preset,
+                "current_version": current_test.config.version,
+                "baseline_version": baseline.config.version,
+                "kpis": findings,
+            }
+        )
 
     if not all_findings:
         return {
@@ -129,11 +131,13 @@ def analyze_kpis(
     for group in all_findings:
         for kpi in group["kpis"]:
             if kpi["status"] == "regression":
-                regressions.append({
-                    "load_config": group["load_config"],
-                    "kpi_id": kpi["kpi_id"],
-                    "delta_pct": kpi["delta_pct"],
-                })
+                regressions.append(
+                    {
+                        "load_config": group["load_config"],
+                        "kpi_id": kpi["kpi_id"],
+                        "delta_pct": kpi["delta_pct"],
+                    }
+                )
 
     return {
         "status": "success",
@@ -269,14 +273,16 @@ def _compare_kpis(
 
         status = _classify_change(delta_pct, higher_is_better)
 
-        findings.append({
-            "kpi_id": kpi_id,
-            "current_value": cur_val,
-            "baseline_value": base_val,
-            "delta_pct": round(delta_pct, 2),
-            "higher_is_better": higher_is_better,
-            "status": status,
-        })
+        findings.append(
+            {
+                "kpi_id": kpi_id,
+                "current_value": cur_val,
+                "baseline_value": base_val,
+                "delta_pct": round(delta_pct, 2),
+                "higher_is_better": higher_is_better,
+                "status": status,
+            }
+        )
 
     return findings
 

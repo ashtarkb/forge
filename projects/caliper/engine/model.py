@@ -151,6 +151,28 @@ class PostProcessingPlugin(ABC):
 
         return str(output_path)
 
+    def analyze_kpis(
+        self,
+        current_kpis: dict[str, Any],
+        historical_kpis: list[dict[str, Any]],
+        output_dir: Path,
+    ) -> dict[str, Any]:
+        """Run project-specific KPI analysis against historical data.
+
+        Override this to implement custom regression detection, version-aware
+        filtering, or any project-specific comparison logic.
+
+        Args:
+            current_kpis: Parsed kpis.json from the current run (schema v2).
+            historical_kpis: List of parsed kpis.json dicts from historical runs.
+            output_dir: Directory where analysis output files should be written.
+
+        Returns:
+            Analysis result dict with at least a "status" key.
+            Status values: "success", "warning", "failed", "not_implemented".
+        """
+        return {"status": "not_implemented"}
+
     def build_ai_data_payload(self, model: UnifiedRunModel) -> dict[str, Any]:
         """Structured JSON for AI agent evaluation."""
         return {"schema_version": "1", "run_id": "", "metrics": {}}

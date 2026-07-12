@@ -191,50 +191,50 @@ def _load_current_kpis(context: NotificationContext) -> dict[str, float]:
     return _extract_kpis_from_file(kpis_file)
 
 
-def _get_current_version() -> str:
-    """Get the MCP Gateway version of the current run."""
-    version = os.environ.get("MCP_GATEWAY_VERSION", "")
-    if not version:
-        version = os.environ.get("MCP_GW_VERSION", "")
-    return version
-
-
-def _get_version_from_kpis_json(kpis_file: Path) -> str | None:
-    """Extract mcp_gateway_version from a kpis.json file's labels."""
-    try:
-        with open(kpis_file) as f:
-            data = json.load(f)
-        for test in data.get("tests", []):
-            labels = test.get("labels", {})
-            version = labels.get("mcp_gateway_version")
-            if version:
-                return str(version)
-    except Exception as e:
-        logger.debug("Could not extract version from %s: %s", kpis_file, e)
-    return None
-
-
 def _load_previous_kpis(context: NotificationContext) -> tuple[dict[str, float], str]:
-    """Load the most recent historical KPIs from a *different* version.
+    """Load the most recent historical KPIs matching current run's config.
+
+    Uses the same matching logic as the analyze step:
+    - Same preset, same load config (num_servers + users)
+    - Same version type (SHA vs semver)
+    - Different version
 
     After S3 import, historical kpis.json files are stored at:
         {artifact_dir}/historical_data/{upload_id}/kpis.json
-
-    The upload_id is a timestamp (e.g. "25-07-12_143021_123"), so sorting
-    the directories in reverse gives us the most recent previous run.
-
-    To provide meaningful comparisons, this function skips historical runs
-    that have the same mcp_gateway_version as the current run. This avoids
-    noise from comparing e.g. v0.7.0 against v0.7.0.
 
     Returns:
         Tuple of (kpi_values_dict, run_name_string).
         Returns ({}, "") if no historical data is available.
     """
+    from projects.mcp_gateway.postprocess.mcp_gateway.analyze import (
+        _extract_tests,
+        _find_matching_baseline,
+    )
+
     test_root = get_test_artifacts_root(context)
     if not test_root:
         return {}, ""
 
+    # Load current run's kpis.json to get its config
+    current_kpis_file = _find_kpis_json(test_root)
+    if not current_kpis_file:
+        return {}, ""
+
+    try:
+        with open(current_kpis_file) as f:
+            current_data = json.load(f)
+    except Exception as e:
+        logger.warning("Failed to load current kpis.json: %s", e)
+        return {}, ""
+
+    current_tests = _extract_tests(current_data)
+    if not current_tests:
+        return {}, ""
+
+    # Use first test entry as the reference for matching
+    current_test = current_tests[0]
+
+    # Load all historical test entries
     historical_dir = test_root / "historical_data"
     if not historical_dir.exists():
         logger.info("No historical_data directory found at %s", historical_dir)
@@ -245,26 +245,39 @@ def _load_previous_kpis(context: NotificationContext) -> tuple[dict[str, float],
         logger.info("No historical kpis.json files found in %s", historical_dir)
         return {}, ""
 
-    current_version = _get_current_version()
-
+    # Collect all historical test entries (ordered by most recent first)
+    all_historical_tests = []
     for kpis_file in historical_kpi_files:
-        if current_version:
-            hist_version = _get_version_from_kpis_json(kpis_file)
-            if hist_version and hist_version == current_version:
-                logger.debug(
-                    "Skipping %s (same version: %s)", kpis_file.parent.name, hist_version
-                )
-                continue
+        try:
+            with open(kpis_file) as f:
+                hist_data = json.load(f)
+            tests = _extract_tests(hist_data)
+            all_historical_tests.extend(tests)
+        except Exception as e:
+            logger.debug("Failed to load %s: %s", kpis_file, e)
 
-        run_name = kpis_file.parent.name
-        hist_version = _get_version_from_kpis_json(kpis_file)
-        if hist_version:
-            run_name = f"{hist_version} ({run_name})"
+    # Find matching baseline using the analyze module's logic
+    baseline = _find_matching_baseline(current_test, all_historical_tests)
+    if not baseline:
+        logger.info(
+            "No matching historical run (config=%s, preset=%s, type=%s)",
+            current_test.config.load_config,
+            current_test.config.preset,
+            "sha" if current_test.config.is_sha else "semver",
+        )
+        return {}, ""
 
-        logger.info("Using historical data from run: %s", run_name)
-        kpis = _extract_kpis_from_file(kpis_file)
-        if kpis:
-            return kpis, run_name
+    # Build run name for display
+    run_name = baseline.config.version
+    if not run_name:
+        run_name = "previous run"
 
-    logger.info("No historical data from a different version found")
+    # Extract target KPIs from baseline
+    target_ids = {k[0] for k in TARGET_KPIS}
+    kpis = {kpi_id: val for kpi_id, val in baseline.values.items() if kpi_id in target_ids}
+
+    if kpis:
+        logger.info("Using baseline: version=%s config=%s", run_name, baseline.config.load_config)
+        return kpis, run_name
+
     return {}, ""

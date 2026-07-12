@@ -11,6 +11,23 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _load_plugin(plugin_module: str):
+    """Load plugin instance from module path.
+
+    Returns the plugin instance or None if loading fails.
+    """
+    try:
+        mod = __import__(plugin_module, fromlist=["get_plugin"])
+        get_plugin = getattr(mod, "get_plugin", None)
+        if get_plugin is None:
+            logger.warning(f"Plugin module {plugin_module} has no get_plugin() function")
+            return None
+        return get_plugin()
+    except Exception as e:
+        logger.warning(f"Could not load plugin {plugin_module}: {e}")
+        return None
+
+
 def run_kpi_analysis(
     current_kpi_file: Path,
     historical_data_dir: Path,
@@ -18,6 +35,10 @@ def run_kpi_analysis(
     plugin_module: str,
 ) -> int:
     """Run KPI analysis and generate output file.
+
+    If the plugin provides an `analyze_kpis` implementation (returns anything
+    other than {"status": "not_implemented"}), that is used. Otherwise falls
+    back to the default stub behaviour.
 
     Args:
         current_kpi_file: Path to current KPI JSON file
@@ -44,49 +65,86 @@ def run_kpi_analysis(
             logger.error(f"Historical data directory not found: {historical_data_dir}")
             return 1
 
-        # Find all historical KPI files
-        historical_kpi_files = []
-        for kpi_file in historical_data_dir.rglob("kpis.json"):
-            historical_kpi_files.append(str(kpi_file))
-            logger.info(f"Found historical KPI file: {kpi_file}")
+        # Load current KPIs
+        with open(current_kpi_file) as f:
+            current_kpis = json.load(f)
+
+        # Find and load all historical KPI files
+        historical_kpi_files = list(historical_data_dir.rglob("kpis.json"))
 
         if not historical_kpi_files:
             logger.warning("No historical KPI files found for analysis")
-            # Return special exit code 2 to indicate warning (no historical data)
             analysis_result = {
                 "status": "warning",
                 "message": "no historical KPI found for regression testing",
                 "current_kpi_file": str(current_kpi_file),
-                "historical_kpi_files": historical_kpi_files,
+                "historical_kpi_files": [],
                 "baseline_files_count": 0,
                 "plugin_module": plugin_module,
                 "completed_at": time.time(),
             }
-            # Write warning result to output file
             output_file.parent.mkdir(parents=True, exist_ok=True)
             with open(output_file, "w") as f:
                 json.dump(analysis_result, f, indent=2)
-            return 2  # Special exit code for warning
+            return 2
 
         logger.info(f"Found {len(historical_kpi_files)} historical KPI files for analysis")
 
-        # Create analysis result
+        historical_kpis_data = []
+        for kpi_file in historical_kpi_files:
+            try:
+                with open(kpi_file) as f:
+                    data = json.load(f)
+                if data.get("schema_version") == "2":
+                    historical_kpis_data.append(data)
+                else:
+                    logger.debug(f"Skipping {kpi_file}: not schema v2")
+            except Exception as e:
+                logger.warning(f"Failed to load {kpi_file}: {e}")
+
+        # Try plugin-specific analysis first
+        plugin = _load_plugin(plugin_module)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if plugin is not None:
+            result = plugin.analyze_kpis(
+                current_kpis=current_kpis,
+                historical_kpis=historical_kpis_data,
+                output_dir=output_file.parent,
+            )
+
+            if result.get("status") != "not_implemented":
+                # Plugin provided its own analysis
+                result.setdefault("current_kpi_file", str(current_kpi_file))
+                result.setdefault("baseline_files_count", len(historical_kpis_data))
+                result.setdefault("plugin_module", plugin_module)
+                result.setdefault("completed_at", time.time())
+
+                with open(output_file, "w") as f:
+                    json.dump(result, f, indent=2)
+                    f.write("\n")
+
+                status = result.get("status", "unknown")
+                if status in ("success", "warning"):
+                    logger.info(f"Plugin analysis completed with status: {status}")
+                    return 0 if status == "success" else 2
+                else:
+                    logger.error(f"Plugin analysis failed: {result.get('error', 'unknown')}")
+                    return 1
+
+        # Default stub: just acknowledge historical data exists
         analysis_result = {
-            "status": "success (stub)",
+            "status": "success",
             "current_kpi_file": str(current_kpi_file),
-            "historical_kpi_files": historical_kpi_files,
-            "baseline_files_count": len(historical_kpi_files),
+            "historical_kpi_files": [str(f) for f in historical_kpi_files],
+            "baseline_files_count": len(historical_kpis_data),
             "plugin_module": plugin_module,
             "completed_at": time.time(),
         }
 
-        # Create output directory if needed
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write analysis results to output file
         with open(output_file, "w") as f:
             json.dump(analysis_result, f, indent=2)
-            f.write("\n")  # Add EOL at EOF
+            f.write("\n")
 
         logger.info(f"Analysis completed successfully, results written to: {output_file}")
         return 0
@@ -94,7 +152,6 @@ def run_kpi_analysis(
     except Exception as e:
         logger.exception("KPI analysis failed")
 
-        # Create failure result
         failure_result = {
             "status": "failed",
             "error": str(e),
@@ -103,12 +160,11 @@ def run_kpi_analysis(
         }
 
         try:
-            # Attempt to write failure result
             if output_file:
                 output_file.parent.mkdir(parents=True, exist_ok=True)
                 with open(output_file, "w") as f:
                     json.dump(failure_result, f, indent=2)
-                    f.write("\n")  # Add EOL at EOF
+                    f.write("\n")
         except Exception:
             logger.exception("Failed to write error result to output file")
 

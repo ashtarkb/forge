@@ -52,9 +52,9 @@ caliper:
       output: regression_analyze/kpi_analyze.json
 
     s3:
-      bucket: mcp-gateway-cpt-data
-      instance: nightly
-      directory: mcp-gateway-cpt-data
+      bucket: psap-dashboard-data
+      instance: mcp_gateway
+      directory: nightly
       vault:
         name: psap-forge-aws-s3-export
         aws_credentials_file: aws.credentials

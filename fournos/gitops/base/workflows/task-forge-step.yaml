@@ -83,7 +83,7 @@ spec:
           export KUBECONFIG=$TARGET_KUBECONFIG
           export CLUSTERLESS_MODE="false"
           echo "Target cluster info:"
-          kubectl cluster-info
+          oc cluster-info
         else
           if [[ "$KUBECONFIG_SECRET_PARAM" == "fournos-clusterless-placeholder" ]]; then
             echo "Running in clusterless mode - no target cluster kubeconfig"
@@ -93,7 +93,7 @@ spec:
           fi
           export CLUSTERLESS_MODE="true"
           echo "Hub cluster info:"
-          kubectl cluster-info
+          oc cluster-info
         fi
 
         # Function to conditionally export environment variables from FournosJob spec

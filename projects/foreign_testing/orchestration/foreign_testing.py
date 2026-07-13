@@ -3,7 +3,7 @@ import os
 import pathlib
 import shutil
 
-from projects.core.ci_entrypoint import run_ci
+from projects.core.ci_entrypoint import run_common
 from projects.core.library import config, env, run
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ def submit(project_path=None):
         launch_args = [*["--project-source", str(project_path)], *launch_args]
         logger.info(f"Submitting deployment with args: {launch_args}")
 
-    run_ci.execute_project_operation(
+    run_common.execute_project_operation(
         project,
         operation,
         launch_args,

@@ -13,8 +13,6 @@ spec:
       type: string
     - name: kubeconfig-secret
       type: string
-      default: "fournos-clusterless-placeholder"
-      description: "Kubeconfig secret name. Uses placeholder for clusterless jobs."
     - name: job-step
       type: string
     - name: job-step-name
@@ -33,8 +31,6 @@ spec:
       env:
       - name: TARGET_KUBECONFIG
         value: /var/run/secrets/fournos-kubeconfig/kubeconfig
-      - name: KUBECONFIG_SECRET_PARAM
-        value: "$(params.kubeconfig-secret)"
       - name: FJOB_NAME
         value: "$(params.fjob-name)"
       - name: FOURNOS_WORKLOAD_NAMESPACE
@@ -77,24 +73,7 @@ spec:
         # switching KUBECONFIG to the target cluster.
         oc get "fjob/$FJOB_NAME" -n "$FOURNOS_WORKLOAD_NAMESPACE" -oyaml > $ARTIFACT_DIR/fournos_fjob.yaml
 
-        # Check if we have a kubeconfig for target cluster
-        if [[ "$KUBECONFIG_SECRET_PARAM" != "fournos-clusterless-placeholder" && -f "$TARGET_KUBECONFIG" ]]; then
-          echo "Setting up target cluster kubeconfig..."
-          export KUBECONFIG=$TARGET_KUBECONFIG
-          export CLUSTERLESS_MODE="false"
-          echo "Target cluster info:"
-          oc cluster-info
-        else
-          if [[ "$KUBECONFIG_SECRET_PARAM" == "fournos-clusterless-placeholder" ]]; then
-            echo "Running in clusterless mode - no target cluster kubeconfig"
-          else
-            echo "WARNING: Expected kubeconfig not found at: $TARGET_KUBECONFIG"
-            echo "Running in clusterless mode as fallback"
-          fi
-          export CLUSTERLESS_MODE="true"
-          echo "Hub cluster info:"
-          oc cluster-info
-        fi
+        export KUBECONFIG=$TARGET_KUBECONFIG
 
         # Function to conditionally export environment variables from FournosJob spec
         export_env_var_from_fjob() {
@@ -147,4 +126,3 @@ spec:
     - name: kubeconfig
       secret:
         secretName: $(params.kubeconfig-secret)
-        optional: true

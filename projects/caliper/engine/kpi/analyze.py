@@ -11,6 +11,55 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _load_kpi_file(path: Path) -> dict[str, Any]:
+    """Load a KPI file, handling both single-document JSON and JSONL formats.
+
+    Returns a dict suitable for plugin consumption.  If the file is JSONL
+    (flat records from ``caliper kpi generate``), the records are grouped by
+    their labels into a hierarchical ``{"tests": [...]}`` structure so that
+    plugins receive a consistent interface.
+    """
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return {}
+
+    # Try single JSON document first
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+
+    # Fall back to JSONL (one JSON object per line)
+    records: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            records.append(json.loads(line))
+
+    if not records:
+        return {}
+
+    # Convert flat KPI records into the hierarchical format plugins expect:
+    #   {"tests": [{"labels": {...}, "kpis": [{"id": ..., "value": ...}, ...]}]}
+    groups: dict[str, dict[str, Any]] = {}
+    for rec in records:
+        labels = dict(rec.get("labels", {}))
+        labels.pop("higher_is_better", None)
+        group_key = json.dumps(labels, sort_keys=True)
+        if group_key not in groups:
+            groups[group_key] = {"labels": labels, "kpis": []}
+        groups[group_key]["kpis"].append({
+            "id": rec.get("kpi_id", ""),
+            "value": rec.get("value"),
+            "unit": rec.get("unit", ""),
+            "higher_is_better": rec.get("labels", {}).get("higher_is_better"),
+        })
+
+    return {"schema_version": "2", "tests": list(groups.values())}
+
+
 def _load_plugin(plugin_module: str):
     """Load plugin instance from module path.
 
@@ -90,18 +139,16 @@ def run_kpi_analysis(
         # Try plugin-specific analysis first
         plugin = _load_plugin(plugin_module)
         if plugin is not None:
-            with open(current_kpi_file) as f:
-                current_kpis = json.load(f)
+            current_kpis = _load_kpi_file(current_kpi_file)
 
             historical_kpis_data = []
             for kpi_file in historical_data_dir.rglob("kpis.json"):
                 try:
-                    with open(kpi_file) as f:
-                        data = json.load(f)
-                    if data.get("schema_version") == "2":
+                    data = _load_kpi_file(kpi_file)
+                    if data.get("tests"):
                         historical_kpis_data.append(data)
                     else:
-                        logger.debug(f"Skipping {kpi_file}: not schema v2")
+                        logger.debug(f"Skipping {kpi_file}: no test entries found")
                 except Exception as e:
                     logger.warning(f"Failed to load {kpi_file}: {e}")
 

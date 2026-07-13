@@ -711,6 +711,8 @@ def analyse_kpis_cmd(
     status_file: Path | None,
 ) -> None:
     """Analyze KPIs for orchestration (fork/exec)."""
+    import sys
+
     import yaml
 
     status_data = {"success": False}

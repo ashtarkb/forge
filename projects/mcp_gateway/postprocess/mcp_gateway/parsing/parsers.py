@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
 from typing import Any
 
 from projects.agentic_tools.locust.helpers.parse_results import RunMetrics, parse_stats_csv
@@ -17,8 +15,6 @@ from projects.caliper.engine.model import (
 logger = logging.getLogger(__name__)
 
 STATS_CSV = "stats.csv"
-METRICS_FILE = "metrics.json"
-PARAMETERS_FILE = "parameters.json"
 
 
 def _labels_from_node(node: TestBaseNode) -> dict[str, Any]:
@@ -33,7 +29,7 @@ def _labels_from_node(node: TestBaseNode) -> dict[str, Any]:
 
 
 def _run_metrics_to_dict(metrics: RunMetrics) -> dict[str, Any]:
-    """Convert RunMetrics to a flat dictionary suitable for metrics.json."""
+    """Convert RunMetrics to a flat dictionary for unified result records."""
     return {
         "total_requests": metrics.total_requests,
         "total_failures": metrics.total_failures,
@@ -46,13 +42,6 @@ def _run_metrics_to_dict(metrics: RunMetrics) -> dict[str, Any]:
         "max_ms": round(metrics.max_ms, 3),
         "requests_per_second": round(metrics.requests_per_second, 3),
     }
-
-
-def _write_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-        f.write("\n")
 
 
 class MCPGatewayParser:
@@ -88,11 +77,6 @@ class MCPGatewayParser:
 
                 labels = _labels_from_node(node)
                 metrics_dict = _run_metrics_to_dict(run_metrics)
-
-                _write_json(node.directory / METRICS_FILE, metrics_dict)
-
-                params = {str(k): ("" if v is None else str(v)) for k, v in labels.items()}
-                _write_json(node.directory / PARAMETERS_FILE, params)
 
                 records.append(
                     UnifiedResultRecord(

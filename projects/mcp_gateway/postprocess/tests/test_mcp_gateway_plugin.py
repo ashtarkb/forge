@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -66,30 +65,14 @@ class TestMCPGatewayParser:
         assert record.metrics["requests_per_second"] == 31.5
         assert record.metrics["p95_ms"] == 80.0
 
-    def test_parse_writes_metrics_json(self, tmp_path: Path):
+    def test_parse_does_not_write_metrics_json(self, tmp_path: Path):
+        """Parser no longer writes metrics.json — caliper handles it generically."""
         node = _make_test_node(tmp_path, "run-a", SAMPLE_STATS_CSV, TEST_LABELS)
         parser = MCPGatewayParser()
 
         parser.parse(tmp_path, [node])
 
-        metrics_file = tmp_path / "run-a" / "metrics.json"
-        assert metrics_file.exists()
-        data = json.loads(metrics_file.read_text())
-        assert data["total_requests"] == 1000
-        assert data["requests_per_second"] == 31.5
-
-    def test_parse_writes_parameters_json(self, tmp_path: Path):
-        node = _make_test_node(tmp_path, "run-a", SAMPLE_STATS_CSV, TEST_LABELS)
-        parser = MCPGatewayParser()
-
-        parser.parse(tmp_path, [node])
-
-        params_file = tmp_path / "run-a" / "parameters.json"
-        assert params_file.exists()
-        data = json.loads(params_file.read_text())
-        assert data["preset"] == "smoke"
-        assert data["target"] == "gateway"
-        assert data["users"] == "16"
+        assert not (tmp_path / "run-a" / "metrics.json").exists()
 
     def test_parse_no_stats_csv(self, tmp_path: Path):
         node_dir = tmp_path / "run-empty"
@@ -123,8 +106,8 @@ class TestMCPGatewayParser:
         assert "run-b" in paths
 
         for node_name in ["run-a", "run-b"]:
-            assert (tmp_path / node_name / "metrics.json").exists()
-            assert (tmp_path / node_name / "parameters.json").exists()
+            assert not (tmp_path / node_name / "metrics.json").exists()
+            assert not (tmp_path / node_name / "parameters.json").exists()
 
 
 # ---------------------------------------------------------------------------

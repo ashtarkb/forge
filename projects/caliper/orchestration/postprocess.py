@@ -1001,6 +1001,9 @@ class CaliperPostprocessOrchestrator:
         # KPI JSON generation
         self._run_artifacts_to_kpis_step(output_dir, mod_str)
 
+        # Generate per-run metrics.json + parameters.json from kpis.json
+        self._run_kpis_to_metrics_step(output_dir)
+
         # KPI CSV export
         self._run_kpis_to_csv_step(output_dir)
 
@@ -1039,6 +1042,39 @@ class CaliperPostprocessOrchestrator:
                     "completed_at": time.time(),
                 },
             )
+
+    def _run_kpis_to_metrics_step(self, output_dir: Path) -> None:
+        """Generate per-run metrics.json + parameters.json from kpis.json.
+
+        Runs automatically after kpis.json generation succeeds. Writes
+        files into each test run directory so the MLflow export backend
+        picks them up via ``_log_metrics_and_params_from_tree``.
+        """
+        kpi_step = self._get_step("artifacts_to_kpis")
+        if not kpi_step or kpi_step.get("status") != "success":
+            return
+
+        kpis_json_path = output_dir / self.config.kpi.artifacts_to_kpis.output
+        if not kpis_json_path.is_file():
+            logger.warning("kpis.json not found at %s, skipping metrics generation", kpis_json_path)
+            return
+
+        try:
+            from projects.caliper.engine.kpi.metrics_from_kpis import generate_metrics_from_kpis
+
+            result = generate_metrics_from_kpis(kpis_json_path, self.tree_root)
+            status = result.get("status", "unknown")
+            if status == "success":
+                logger.info(
+                    "kpis-to-metrics: wrote metrics.json for %d test(s)",
+                    result.get("tests_processed", 0),
+                )
+            elif status == "skipped":
+                logger.info("kpis-to-metrics: skipped — %s", result.get("reason", ""))
+            else:
+                logger.warning("kpis-to-metrics: %s", result.get("error", "unknown error"))
+        except Exception as e:
+            logger.warning("kpis-to-metrics conversion failed (non-fatal): %s", e)
 
     def _run_kpis_to_csv_step(self, output_dir: Path) -> None:
         """Execute the KPI CSV export step."""

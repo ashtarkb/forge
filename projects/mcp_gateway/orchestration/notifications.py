@@ -37,13 +37,9 @@ TARGET_KPIS = [
     ("mcp_gw_failure_rate", "Failure rate", "%"),
 ]
 
-# Mapping from kpis.jsonl IDs to MLflow metrics.json keys (logged via mlflow.log_metric)
-_KPI_TO_MLFLOW_METRIC = {
-    "mcp_gw_requests_per_second": "requests_per_second",
-    "mcp_gw_p95_ms": "p95_ms",
-    "mcp_gw_p99_ms": "p99_ms",
-    "mcp_gw_failure_rate": "failure_rate",
-}
+# KPI IDs are now logged directly as MLflow metric keys via the generic
+# caliper kpis-to-metrics conversion — no mapping needed.
+_KPI_IDS = {kpi_id for kpi_id, _, _ in TARGET_KPIS}
 
 _RUN_NAME_PREFIX = "forge-mcp-gateway-"
 
@@ -376,12 +372,7 @@ def _load_previous_kpis_from_mlflow(
                 return {}, "", True
 
             raw_metrics = previous_run.data.metrics or {}
-            mlflow_to_kpi = {v: k for k, v in _KPI_TO_MLFLOW_METRIC.items()}
-            metrics = {}
-            for mlflow_key, value in raw_metrics.items():
-                kpi_id = mlflow_to_kpi.get(mlflow_key)
-                if kpi_id:
-                    metrics[kpi_id] = value
+            metrics = {k: v for k, v in raw_metrics.items() if k in _KPI_IDS}
 
             return metrics, prev_name, False
 

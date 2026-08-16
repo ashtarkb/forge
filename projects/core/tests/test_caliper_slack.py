@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
 
-# Provider imports slack_sdk at module load; stub if missing in local envs.
-if "slack_sdk" not in sys.modules:
+# Provider imports slack_sdk at module load; stub only when the package is absent.
+try:
+    import slack_sdk  # noqa: F401
+except ImportError:
     _slack = ModuleType("slack_sdk")
     _slack.WebClient = MagicMock  # type: ignore[attr-defined]
     _slack.errors = ModuleType("slack_sdk.errors")
     _slack.errors.SlackApiError = type("SlackApiError", (Exception,), {})  # type: ignore[attr-defined]
     sys.modules["slack_sdk"] = _slack
     sys.modules["slack_sdk.errors"] = _slack.errors
-
-if "jsonpath_ng" not in sys.modules:
-    sys.modules["jsonpath_ng"] = ModuleType("jsonpath_ng")
-
-import json
 
 import pytest
 
@@ -109,11 +107,16 @@ class _FakeProject:
 
 @pytest.fixture
 def fake_config(monkeypatch):
-    import projects.core.library.config as config_mod
-
     def _install(tmp_path: Path | None = None, *, notify_always: bool = False):
         project = _FakeProject(tmp_path, notify_always=notify_always)
-        monkeypatch.setattr(config_mod, "project", project)
+        # Prefer the real config module (CI). Fall back only when deps like
+        # jsonpath_ng are missing locally — never replace a loaded real module.
+        try:
+            import projects.core.library.config as config_mod
+        except ModuleNotFoundError:
+            config_mod = ModuleType("projects.core.library.config")
+            monkeypatch.setitem(sys.modules, "projects.core.library.config", config_mod)
+        monkeypatch.setattr(config_mod, "project", project, raising=False)
         return project
 
     return _install

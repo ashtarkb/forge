@@ -338,6 +338,6 @@ def _get_mock_server_image() -> str:
     """Resolve the mock server container image from config."""
     try:
         mock_cfg = cfg.get_mock_server_config()
-        return mock_cfg.get("image", "quay.io/rh-ee-aharush/perf-mock-server:latest")
+        return mock_cfg.get("image", "quay.io/rh-ee-aharush/perf-mock-server:new-protocol")
     except Exception:
-        return "quay.io/rh-ee-aharush/perf-mock-server:latest"
+        return "quay.io/rh-ee-aharush/perf-mock-server:new-protocol"

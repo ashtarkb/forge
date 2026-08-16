@@ -210,7 +210,7 @@ def _deploy_servers(
     scheduling: dict[str, Any] | None = None,
 ) -> None:
     """Deploy mock server(s) and gateway infrastructure."""
-    image = mock_server_cfg.get("image", "quay.io/rh-ee-aharush/perf-mock-server:latest")
+    image = mock_server_cfg.get("image", "quay.io/rh-ee-aharush/perf-mock-server:new-protocol")
     sched = scheduling or {}
 
     deploy_mock_servers.run(

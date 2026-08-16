@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from projects.caliper.engine.kpi.analyze import AnalysisConfig
 from projects.caliper.engine.model import (
     ParseResult,
     PostProcessingPlugin,
@@ -15,6 +16,15 @@ from projects.caliper.engine.model import (
 from .parsing import MCPGatewayKpiHandler, MCPGatewayParser
 
 logger = logging.getLogger(__name__)
+
+# Compare versions while matching on load shape / target / protocol.
+analysis_config = AnalysisConfig(
+    comparison_keys=["mcp_gateway_version"],
+    ignored_keys=[],
+    sorting_keys=["num_servers", "users", "target"],
+    max_relative_regression=0.10,
+    min_baseline_points=1,
+)
 
 
 class MCPGatewayPlugin(PostProcessingPlugin):

@@ -25,6 +25,10 @@ class MCPGatewayConfig(BaseRuntimeConfig):
     def get_mock_server_key(self) -> str:
         return config.project.get_config("runtime.mock_server")
 
+    def get_protocol_mode(self) -> str:
+        """Return MCP protocol mode: stateful (2025) or stateless (2026)."""
+        return config.project.get_config("runtime.protocol_mode", "stateful")
+
     def get_mock_server_config(self) -> dict[str, Any]:
         key = self.get_mock_server_key()
         return copy.deepcopy(config.project.get_config(f"mock_servers.{key}"))
@@ -197,19 +201,33 @@ class MCPGatewayConfig(BaseRuntimeConfig):
             tool_prefix = ""
             host_header = ""
 
+        protocol_mode = self.get_protocol_mode()
+        runtime_dir = Path(locust_runtime.__file__).parent
+        users_dir = Path(locust_users.__file__).parent
+
+        if protocol_mode == "stateless":
+            user_class = "MCP2026User"
+            extra_files = [
+                str(users_dir / "mcp_2026_user.py"),
+            ]
+        else:
+            user_class = "MCPSessionUser"
+            extra_files = [
+                str(users_dir / "mcp_session_user.py"),
+                str(self.get_mcp_client_path()),
+            ]
+
         env_vars = {
-            "USER_CLASS": "MCPSessionUser",
+            "USER_CLASS": user_class,
             "TARGET": target,
             "TOOL_PREFIX": tool_prefix,
             "HOST_HEADER": host_header,
             "CALLS_PER_SESSION": str(self.get_calls_per_session()),
             "WARMUP_SECONDS": str(warmup_seconds),
+            "PROTOCOL_MODE": protocol_mode,
         }
         if num_servers > 1:
             env_vars["NUM_SERVERS"] = str(num_servers)
-
-        runtime_dir = Path(locust_runtime.__file__).parent
-        users_dir = Path(locust_users.__file__).parent
 
         return dict(
             job_name=job_name,
@@ -222,7 +240,7 @@ class MCPGatewayConfig(BaseRuntimeConfig):
             configmap_name=f"locust-scripts-mcp-{preset}"[:63],
             locustfiles_dir=str(runtime_dir),
             locustfile_names=["locustfile_main.py", "metrics_hook.py"],
-            extra_files=[str(users_dir / "mcp_session_user.py"), str(self.get_mcp_client_path())],
+            extra_files=extra_files,
             env_vars=env_vars,
             labels={"forge.openshift.io/project": "mcp_gateway"},
             node_selector=scheduling.get("node_selector"),

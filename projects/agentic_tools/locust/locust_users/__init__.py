@@ -9,6 +9,7 @@ User classes (one per file):
 - ResponsesMCPBenchmarkUser  (responses_mcp_benchmark_user.py)
 - ChatCompletionsUser        (chat_completions_user.py)
 - MCPSessionUser             (mcp_session_user.py)
+- MCP2026User                (mcp_2026_user.py)
 
 Shared utilities:
 - _common.py                 Prompt loading, round-robin counter

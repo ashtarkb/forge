@@ -204,6 +204,15 @@ queries:
     unit: req/s
     description: HTTP 5xx error rate by workload
 
+  http_4xx_rate:
+    category: http
+    promql: >-
+      sum(rate(istio_requests_total
+      {destination_workload_namespace=~"{ns}",response_code=~"4.."}[1m]))
+      by (destination_workload)
+    unit: req/s
+    description: HTTP 4xx error rate by workload
+
   http_latency_p50:
     category: http
     promql: >-

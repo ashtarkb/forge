@@ -33,7 +33,6 @@ vaults:
 notifications:
   slack:
     channel_id: C0BEBS6929L
-    provider_module: projects.mcp_gateway.orchestration.notifications.MCPGatewaySlackProvider
 
 metrics:
   enabled: true
@@ -43,7 +42,21 @@ metrics:
     - gateway-system
     - istio-system
   step_seconds: 15
-  query_keys: []  # empty = all queries from queries.yaml
+  query_keys:
+    - cpu_usage
+    - cpu_throttling
+    - memory_usage
+    - memory_rss
+    - memory_oom_kills
+    - container_restarts
+    - http_request_rate
+    - http_error_rate
+    - http_4xx_rate
+    - http_latency_p50
+    - http_latency_p95
+    - http_latency_p99
+    - network_rx_bytes
+    - network_tx_bytes
 
 caliper:
   postprocess:
@@ -70,6 +83,7 @@ caliper:
         output_dir: ai_data
     analyze:
       enabled: true
+      current_kpis: kpis.json
       historical_kpis: historical_data
       output: regression_analyze/kpi_analyze.json
       fail_on_regression: false

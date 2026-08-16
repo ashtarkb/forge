@@ -3,6 +3,7 @@ namespace_override: null
 
 namespace: mcp-gw-bench
 mock_server: perf-mock-server
+protocol_mode: stateful
 calls_per_session: 0
 spawn_rate: null
 users_per_worker: 32

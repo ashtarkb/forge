@@ -153,24 +153,34 @@ class CIApp:
     def _resolve_notification_provider(self):
         """Auto-discover notification provider from config.
 
-        Reads ``notifications.slack.provider_module`` (a fully-qualified
-        class path like ``projects.foo.notifications.MyProvider``) and
-        instantiates it.  Returns None if not configured.
+        Preference order:
+        1. ``notifications.slack.provider_module`` (custom class path)
+        2. ``CaliperSlackProvider`` when ``notifications.slack.channel_id`` is set
+        3. None (Slack disabled)
         """
         provider_path = config.project.get_config(
             "notifications.slack.provider_module", None, print=False, warn=False
         )
-        if not provider_path:
-            return None
+        if provider_path:
+            try:
+                module_path, class_name = provider_path.rsplit(".", 1)
+                mod = importlib.import_module(module_path)
+                provider_cls = getattr(mod, class_name)
+                return provider_cls()
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to resolve notification provider '{provider_path}': {e}"
+                ) from e
 
-        try:
-            module_path, class_name = provider_path.rsplit(".", 1)
-            mod = importlib.import_module(module_path)
-            provider_cls = getattr(mod, class_name)
-            return provider_cls()
-        except Exception as e:
-            logger.warning("Failed to resolve notification provider '%s': %s", provider_path, e)
-            return None
+        channel_id = config.project.get_config(
+            "notifications.slack.channel_id", None, print=False, warn=False
+        )
+        if channel_id:
+            from projects.core.notifications.caliper_slack import CaliperSlackProvider
+
+            return CaliperSlackProvider()
+
+        return None
 
     # ------------------------------------------------------------------
     # Build

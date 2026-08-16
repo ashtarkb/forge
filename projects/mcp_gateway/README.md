@@ -50,7 +50,8 @@ projects/
 | Summary helpers | `agentic_tools/locust/helpers/summary` | Saving metrics.json + parameters.json for caliper multi-run export |
 | Locust K8s template | `agentic_tools/locust/templates/locust_job.yaml` | Base Job/Service YAML for distributed Locust deployments |
 | Locust runtime | `agentic_tools/locust/locust_runtime/` | Shared entry point, warmup hook, load shapes |
-| MCP session user | `agentic_tools/locust/locust_users/mcp_session_user.py` | Locust user class for MCP protocol load |
+| MCP session user | `agentic_tools/locust/locust_users/mcp_session_user.py` | Locust user class for MCP protocol load (stateful) |
+| MCP 2026 user | `agentic_tools/locust/locust_users/mcp_2026_user.py` | Locust user class for MCP 2026-07-28 (stateless) |
 | Mock MCP server deployer | `agentic_tools/mcp/toolbox/deploy_mock_servers` | Deploying/restarting/cleaning up 1..N mock MCP server pods |
 | MCP HTTP client | `agentic_tools/mcp/clients/mcp_client.py` | Streamable HTTP client implementing MCP protocol |
 

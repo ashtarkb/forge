@@ -42,6 +42,7 @@ def do_test() -> int:
     preset = cfg.get_preset_name()
     mock_server = cfg.get_mock_server_key()
     mock_server_cfg = cfg.get_mock_server_config()
+    protocol_mode = cfg.get_protocol_mode()
     version = cfg.get_deployed_version()
 
     servers = cfg.get_experiment_servers()
@@ -82,6 +83,7 @@ def do_test() -> int:
                         preset=preset,
                         mock_server=mock_server,
                         mock_server_cfg=mock_server_cfg,
+                        protocol_mode=protocol_mode,
                         version=version,
                         num_servers=num_servers,
                         users=users,
@@ -99,6 +101,7 @@ def do_test() -> int:
     summary: dict[str, Any] = {
         "preset": preset,
         "version": version,
+        "protocol_mode": protocol_mode,
         "servers": servers,
         "concurrency": concurrency,
         "targets": targets,
@@ -126,6 +129,7 @@ def run_one_test(
     preset: str,
     mock_server: str,
     mock_server_cfg: dict[str, Any],
+    protocol_mode: str,
     version: str,
     num_servers: int,
     users: int,
@@ -138,6 +142,7 @@ def run_one_test(
     job_name: str,
 ) -> None:
     """Run a single test iteration inside a NextArtifactDir context."""
+    version_kind = "sha" if re.fullmatch(r"[0-9a-f]{40}", version) else "release"
     write_test_labels(
         env.ARTIFACT_DIR,
         {
@@ -146,7 +151,9 @@ def run_one_test(
             "users": str(users),
             "num_servers": str(num_servers),
             "mock_server": mock_server,
+            "protocol_mode": protocol_mode,
             "mcp_gateway_version": version,
+            "version_kind": version_kind,
             "tools_per_server": str(tools_per_server),
         },
     )
@@ -211,6 +218,7 @@ def _deploy_servers(
         count=num_servers,
         image=image,
         tools_per_server=tools_per_server,
+        protocol_mode=cfg.get_protocol_mode(),
         labels={"forge.openshift.io/project": "mcp_gateway"},
         node_selector=sched.get("node_selector"),
         tolerations=sched.get("tolerations"),

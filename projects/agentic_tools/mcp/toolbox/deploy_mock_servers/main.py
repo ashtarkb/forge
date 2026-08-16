@@ -34,6 +34,7 @@ def run(
     image: str,
     name_prefix: str = "mock-server",
     tools_per_server: int = 10,
+    protocol_mode: str = "stateful",
     labels: dict[str, str] | None = None,
     node_selector: dict[str, str] | None = None,
     tolerations: list[dict[str, str]] | None = None,
@@ -59,6 +60,7 @@ def generate_and_apply_manifests(args, ctx):
     """Generate YAML manifests for all servers and apply them."""
     merged_labels = dict(args.labels) if args.labels else {}
     merged_labels["forge.openshift.io/component"] = "mock-mcp"
+    merged_labels["forge.openshift.io/mcp-protocol"] = args.protocol_mode
 
     ctx.names = [f"{args.name_prefix}-{i}" for i in range(1, args.count + 1)]
 
@@ -69,6 +71,7 @@ def generate_and_apply_manifests(args, ctx):
             namespace=args.namespace,
             image=args.image,
             tools_per_server=args.tools_per_server,
+            protocol_mode=args.protocol_mode,
             labels=merged_labels,
             node_selector=args.node_selector,
             tolerations=args.tolerations,
@@ -225,6 +228,7 @@ def _generate_server_manifest(
     namespace: str,
     image: str,
     tools_per_server: int,
+    protocol_mode: str,
     labels: dict[str, str],
     node_selector: dict[str, str] | None = None,
     tolerations: list[dict[str, str]] | None = None,
@@ -243,6 +247,10 @@ def _generate_server_manifest(
                 "env": [
                     {"name": "GOGC", "value": "off"},
                     {"name": "NUM_TOOLS", "value": str(tools_per_server)},
+                    {
+                        "name": "STATELESS",
+                        "value": "true" if protocol_mode == "stateless" else "false",
+                    },
                 ],
                 "ports": [{"containerPort": 8080, "name": "http"}],
                 "readinessProbe": {

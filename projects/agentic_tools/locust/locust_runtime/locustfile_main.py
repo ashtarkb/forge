@@ -20,6 +20,7 @@ user_class_name = os.environ.get("USER_CLASS", "ResponsesSimpleUser")
 _user_class_modules = [
     "responses_users",
     "mcp_session_user",
+    "mcp_2026_user",
 ]
 
 

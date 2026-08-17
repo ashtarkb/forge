@@ -26,12 +26,14 @@ logger = logging.getLogger(__name__)
 def run(
     *,
     platform_config: dict[str, Any],
+    scheduling_node_selector: dict[str, str] | None = None,
 ) -> int:
     """
     Remove the full MCP Gateway platform stack in reverse order.
 
     Args:
         platform_config: Platform configuration dict from infrastructure.yaml
+        scheduling_node_selector: Labels to remove from worker nodes after cleanup
     """
     execute_tasks(locals())
     return 0
@@ -49,6 +51,7 @@ def resolve_config(args, ctx):
     ctx.gateway_namespace = config.get("gateway_namespace", "gateway-system")
     ctx.ctrl = config.get("mcp_gateway_controller", {})
     ctx.steps = config.get("steps", [])
+    ctx.node_selector = args.scheduling_node_selector or {}
 
     return f"Cleanup config resolved: {len(ctx.steps)} steps"
 
@@ -191,6 +194,23 @@ def delete_namespaces(args, ctx):
     )
 
     return f"Deleted namespaces: {', '.join(to_delete)}"
+
+
+@always
+@task
+def unlabel_worker_nodes(args, ctx):
+    """Remove scheduling node_selector labels from worker nodes."""
+    selector = ctx.node_selector
+    if not selector:
+        return "No node_selector configured, skipping"
+
+    label_sel = ",".join(f"{k}={v}" for k, v in selector.items())
+    result = oc("get", "nodes", "-l", label_sel, "-o", "name", check=False, log_stdout=False)
+    nodes = [line.rsplit("/", 1)[-1] for line in result.stdout.splitlines() if line.strip()]
+    for node in nodes:
+        oc("label", "node", node, *[f"{k}-" for k in selector], check=False)
+        logger.info("Removed scheduling labels from node %s", node)
+    return f"Removed scheduling labels from {len(nodes)} node(s)"
 
 
 @always

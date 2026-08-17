@@ -38,12 +38,14 @@ logger = logging.getLogger(__name__)
 def run(
     *,
     platform_config: dict[str, Any],
+    scheduling_node_selector: dict[str, str] | None = None,
 ) -> int:
     """
     Install the full MCP Gateway platform stack.
 
     Args:
         platform_config: Platform configuration dict from infrastructure.yaml
+        scheduling_node_selector: Labels to apply to worker nodes before install
     """
     execute_tasks(locals())
     return 0
@@ -75,7 +77,26 @@ def validate_config(args, ctx):
     logger.info("MCP Gateway namespace: %s", ctx.mcp_gateway_namespace)
     logger.info("Gateway namespace: %s", ctx.gateway_namespace)
 
+    ctx.node_selector = args.scheduling_node_selector or {}
+
     return f"Config validated: {len(ctx.steps)} steps, kustomize_base={ctx.kustomize_base}"
+
+
+@task
+def label_worker_nodes(args, ctx):
+    """Label worker nodes with the scheduling node_selector."""
+    selector = ctx.node_selector
+    if not selector:
+        return "No node_selector configured, skipping"
+
+    result = oc(
+        "get", "nodes", "-l", "node-role.kubernetes.io/worker", "-o", "name", log_stdout=False
+    )
+    nodes = [line.rsplit("/", 1)[-1] for line in result.stdout.splitlines() if line.strip()]
+    for node in nodes:
+        oc("label", "node", node, "--overwrite", *[f"{k}={v}" for k, v in selector.items()])
+        logger.info("Labeled node %s with %s", node, selector)
+    return f"Labeled {len(nodes)} worker node(s) with {selector}"
 
 
 @task

@@ -82,7 +82,11 @@ def run_platform_cleanup() -> int:
                     "Kustomize-based cleanup steps will be skipped."
                 )
 
-        cleanup_platform_mod.run(platform_config=platform_cfg)
+        scheduling = cfg.get_scheduling_config()
+        cleanup_platform_mod.run(
+            platform_config=platform_cfg,
+            scheduling_node_selector=scheduling.get("node_selector"),
+        )
         cleanup_platform_clone()
     else:
         logger.info("Platform cleanup not enabled (cleanup_platform=false)")

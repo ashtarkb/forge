@@ -80,7 +80,11 @@ def run() -> int:
                 f"Cannot install nightly build for commit {version}."
             )
 
-    install_platform_mod.run(platform_config=platform_cfg)
+    scheduling = cfg.get_scheduling_config()
+    install_platform_mod.run(
+        platform_config=platform_cfg,
+        scheduling_node_selector=scheduling.get("node_selector"),
+    )
 
     ensure_namespace(
         namespace,

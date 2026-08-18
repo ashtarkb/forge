@@ -355,7 +355,7 @@ def _resolve_benchmark_config(benchmark_name: str) -> dict[str, Any]:
     )
     workload_defaults = copy.deepcopy(config.project.get_config("workloads", print=False))
 
-    default_keys = ("job_name", "image", "pvc_size", "timeout_seconds")
+    default_keys = ("job_name", "image", "pvc_size", "pvc_storage_class", "timeout_seconds")
     for key in default_keys:
         if key in workload_defaults and key not in benchmark:
             benchmark[key] = workload_defaults[key]
@@ -401,7 +401,7 @@ def get_workload_config() -> dict[str, Any] | None:
         return None
 
     # Apply same merging logic as _resolve_benchmark_config
-    default_keys = ("job_name", "image", "pvc_size", "timeout_seconds")
+    default_keys = ("job_name", "image", "pvc_size", "pvc_storage_class", "timeout_seconds")
     for key in default_keys:
         if key in workload_defaults and key not in default_benchmark:
             default_benchmark[key] = workload_defaults[key]

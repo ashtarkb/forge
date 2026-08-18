@@ -715,6 +715,7 @@ def run_guidellm_benchmark(*, endpoint_url: str) -> None:
             image=benchmark.get("image"),
             timeout=benchmark.get("timeout_seconds"),
             pvc_size=benchmark.get("pvc_size"),
+            pvc_storage_class=benchmark.get("pvc_storage_class"),
             guidellm_args=guidellm_args,
         )
 

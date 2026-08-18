@@ -1,6 +1,7 @@
 job_name: guidellm-benchmark
 image: ghcr.io/vllm-project/guidellm:v0.5.4
 pvc_size: 1Gi
+pvc_storage_class: null
 timeout_seconds: 3600
 args: {}
 

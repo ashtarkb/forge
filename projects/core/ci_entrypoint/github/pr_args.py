@@ -27,10 +27,76 @@ CI_METADATA_DIRNAME = "000__ci_metadata"
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_AUTHOR_ASSOCIATION = "COLLABORATOR"
-
 DEFAULT_REPO_OWNER = "openshift-psap"
 DEFAULT_REPO_NAME = "forge"
+
+
+def load_owners_file() -> dict[str, list[str]]:
+    """
+    Load and parse the local OWNERS file.
+
+    Returns:
+        Dictionary with lists of approvers, reviewers, and testers
+
+    Raises:
+        Exception: If OWNERS file cannot be found or parsed
+    """
+    owners_path = Path("OWNERS")
+
+    try:
+        logger.info(f"Loading OWNERS file from: {owners_path}")
+
+        if not owners_path.exists():
+            raise FileNotFoundError(f"OWNERS file not found at {owners_path}")
+
+        with open(owners_path) as f:
+            owners_content = f.read()
+
+        owners_data = yaml.safe_load(owners_content)
+
+        if not isinstance(owners_data, dict):
+            raise ValueError("OWNERS file must contain a YAML dictionary")
+
+        # Extract lists, defaulting to empty lists if not present
+        return {
+            "approvers": owners_data.get("approvers", []),
+            "reviewers": owners_data.get("reviewers", []),
+            "testers": owners_data.get("testers", []),
+        }
+
+    except yaml.YAMLError as e:
+        raise RuntimeError(f"Failed to parse OWNERS file: {e}") from e
+
+
+def is_user_authorized(username: str, pr_author: str, owners_data: dict[str, list[str]]) -> bool:
+    """
+    Check if a user is authorized to configure CI.
+
+    A user is authorized if they are:
+    1. The PR author, or
+    2. In the approvers list, or
+    3. In the reviewers list, or
+    4. In the testers list
+
+    Args:
+        username: GitHub username to check
+        pr_author: The PR author's username
+        owners_data: Dictionary with lists of approvers, reviewers, and testers
+
+    Returns:
+        True if the user is authorized, False otherwise
+    """
+    if username == pr_author:
+        logger.info(f"User '{username}' authorized as PR author")
+        return True
+
+    # Check if user is in any of the authorized lists
+    for role, users in owners_data.items():
+        if username in users:
+            logger.info(f"User '{username}' authorized as {role}")
+            return True
+
+    return False
 
 
 def get_directive_handlers() -> dict[str, Callable[[str], dict[str, Any]]]:
@@ -403,28 +469,30 @@ def parse_pr_arguments(
     # Find the last relevant comment
     pr_author = pr_data["user"]["login"]
 
+    # Load OWNERS file to check authorization
+    owners_data = load_owners_file()
+
     test_anchor = f"/test {test_name}"
 
     logger.info(
-        f"# Looking for comments from author '{pr_author}' or '{REQUIRED_AUTHOR_ASSOCIATION}' containing '{test_anchor}'"
+        f"# Looking for comments from authorized users (PR author '{pr_author}' or users in OWNERS file) containing '{test_anchor}'"
     )
 
     # Search comments in reverse order (most recent first)
     last_user_test_comment = None
     for comment in reversed(last_comment_page_data):
         author_login = comment.get("user", {}).get("login", "")
-        author_association = comment.get("author_association", "")
         comment_body = comment.get("body", "")
 
-        # Check if this is from the PR author or a contributor
-        if author_login == pr_author or author_association == REQUIRED_AUTHOR_ASSOCIATION:
+        # Check if this is from an authorized user using OWNERS file
+        if is_user_authorized(author_login, pr_author, owners_data):
             if test_anchor in comment_body:
                 last_user_test_comment = comment_body
                 break
 
     if not last_user_test_comment:
         raise ValueError(
-            f"No comment found from '{pr_author}' or '{REQUIRED_AUTHOR_ASSOCIATION}' containing '{test_anchor}'"
+            f"No comment found from authorized users (PR author '{pr_author}' or users in OWNERS file) containing '{test_anchor}'"
         )
 
     # Parse all directives from PR body and last comment

@@ -54,6 +54,7 @@ def run(
     image: str = "ghcr.io/vllm-project/guidellm:v0.6.0",
     timeout: int = 900,
     pvc_size: str = "1Gi",
+    pvc_storage_class: str | None = None,
     guidellm_args: list[str] | None = None,
     hf_token_secret: str = "",
     fs_group: int | None = None,
@@ -189,6 +190,7 @@ def create_guidellm_resources_task(args, ctx):
             namespace=ctx.target_namespace,
             name=ctx.benchmark_name,
             pvc_size=args.pvc_size,
+            pvc_storage_class=args.pvc_storage_class,
             owner_reference=owner_reference,
         ),
     )

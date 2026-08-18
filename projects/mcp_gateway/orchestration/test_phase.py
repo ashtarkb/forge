@@ -143,6 +143,7 @@ def run_one_test(
 ) -> None:
     """Run a single test iteration inside a NextArtifactDir context."""
     version_kind = "sha" if re.fullmatch(r"[0-9a-f]{40}", version) else "release"
+    version_source = "ghcr" if version_kind == "sha" else "tag"
     write_test_labels(
         env.ARTIFACT_DIR,
         {
@@ -154,6 +155,7 @@ def run_one_test(
             "protocol_mode": protocol_mode,
             "mcp_gateway_version": version,
             "version_kind": version_kind,
+            "version_source": version_source,
             "tools_per_server": str(tools_per_server),
         },
     )
@@ -222,6 +224,7 @@ def _deploy_servers(
         labels={"forge.openshift.io/project": "mcp_gateway"},
         node_selector=sched.get("node_selector"),
         tolerations=sched.get("tolerations"),
+        resources=mock_server_cfg.get("resources"),
     )
 
     if "gateway" in targets:

@@ -84,19 +84,53 @@ def validate_config(args, ctx):
 
 @task
 def label_worker_nodes(args, ctx):
-    """Label worker nodes with the scheduling node_selector."""
+    """Select the worker node with the most allocatable resources and label it."""
     selector = ctx.node_selector
     if not selector:
         return "No node_selector configured, skipping"
 
+    import json
+
     result = oc(
-        "get", "nodes", "-l", "node-role.kubernetes.io/worker", "-o", "name", log_stdout=False
+        "get", "nodes", "-l", "node-role.kubernetes.io/worker",
+        "-o", "json", check=False, log_stdout=False,
     )
-    nodes = [line.rsplit("/", 1)[-1] for line in result.stdout.splitlines() if line.strip()]
-    for node in nodes:
-        oc("label", "node", node, "--overwrite", *[f"{k}={v}" for k, v in selector.items()])
-        logger.info("Labeled node %s with %s", node, selector)
-    return f"Labeled {len(nodes)} worker node(s) with {selector}"
+    if result.returncode != 0 or not result.stdout.strip():
+        return "No worker nodes found"
+
+    nodes_data = json.loads(result.stdout)
+    best_node = None
+    best_score = -1
+
+    for node in nodes_data.get("items", []):
+        conditions = node.get("status", {}).get("conditions", [])
+        ready = any(
+            c.get("type") == "Ready" and c.get("status") == "True"
+            for c in conditions
+        )
+        if not ready:
+            continue
+
+        alloc = node.get("status", {}).get("allocatable", {})
+        cpu_str = alloc.get("cpu", "0")
+        cpu_milli = _parse_cpu_to_milli(cpu_str)
+        mem_str = alloc.get("memory", "0")
+        mem_bytes = _parse_mem_to_bytes(mem_str)
+
+        score = cpu_milli * 1_000_000 + mem_bytes
+        if score > best_score:
+            best_score = score
+            best_node = node["metadata"]["name"]
+
+    if not best_node:
+        return "No Ready worker nodes found"
+
+    oc(
+        "label", "node", best_node, "--overwrite",
+        *[f"{k}={v}" for k, v in selector.items()],
+        log_stdout=False,
+    )
+    return f"Labeled strongest worker node with {selector}"
 
 
 @task
@@ -566,6 +600,25 @@ def _version_gte(version: str, minimum: str) -> bool:
             minimum,
         )
         return False
+
+
+def _parse_cpu_to_milli(cpu: str) -> int:
+    """Convert a Kubernetes CPU string to millicores."""
+    if cpu.endswith("m"):
+        return int(cpu[:-1])
+    return int(float(cpu) * 1000)
+
+
+def _parse_mem_to_bytes(mem: str) -> int:
+    """Convert a Kubernetes memory string to bytes."""
+    suffixes = {
+        "Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4,
+        "K": 1000, "M": 1000**2, "G": 1000**3, "T": 1000**4,
+    }
+    for suffix, multiplier in suffixes.items():
+        if mem.endswith(suffix):
+            return int(mem[: -len(suffix)]) * multiplier
+    return int(mem)
 
 
 def _version_spec(version: str) -> dict[str, Any]:

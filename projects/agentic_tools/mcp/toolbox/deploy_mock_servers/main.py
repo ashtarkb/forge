@@ -38,6 +38,7 @@ def run(
     labels: dict[str, str] | None = None,
     node_selector: dict[str, str] | None = None,
     tolerations: list[dict[str, str]] | None = None,
+    resources: dict[str, Any] | None = None,
     rollout_timeout: str = "120s",
 ) -> int:
     """Deploy mock servers and wait for readiness."""
@@ -75,6 +76,7 @@ def generate_and_apply_manifests(args, ctx):
             labels=merged_labels,
             node_selector=args.node_selector,
             tolerations=args.tolerations,
+            resources=args.resources,
         )
         all_manifests.append(manifest)
 
@@ -232,35 +234,38 @@ def _generate_server_manifest(
     labels: dict[str, str],
     node_selector: dict[str, str] | None = None,
     tolerations: list[dict[str, str]] | None = None,
+    resources: dict[str, Any] | None = None,
 ) -> str:
     """Generate a YAML manifest for a single mock server Deployment + Service."""
     label_set = {"app": name}
     label_set.update(labels)
 
-    pod_spec: dict[str, Any] = {
-        "containers": [
+    container: dict[str, Any] = {
+        "name": "server",
+        "image": image,
+        "imagePullPolicy": "Always",
+        "args": ["--addr", ":8080"],
+        "env": [
+            {"name": "GOGC", "value": "off"},
+            {"name": "NUM_TOOLS", "value": str(tools_per_server)},
             {
-                "name": "server",
-                "image": image,
-                "imagePullPolicy": "Always",
-                "args": ["--addr", ":8080"],
-                "env": [
-                    {"name": "GOGC", "value": "off"},
-                    {"name": "NUM_TOOLS", "value": str(tools_per_server)},
-                    {
-                        "name": "STATELESS",
-                        "value": "true" if protocol_mode == "stateless" else "false",
-                    },
-                ],
-                "ports": [{"containerPort": 8080, "name": "http"}],
-                "readinessProbe": {
-                    "tcpSocket": {"port": 8080},
-                    "initialDelaySeconds": 2,
-                    "periodSeconds": 5,
-                    "timeoutSeconds": 2,
-                },
-            }
+                "name": "STATELESS",
+                "value": "true" if protocol_mode == "stateless" else "false",
+            },
         ],
+        "ports": [{"containerPort": 8080, "name": "http"}],
+        "readinessProbe": {
+            "tcpSocket": {"port": 8080},
+            "initialDelaySeconds": 2,
+            "periodSeconds": 5,
+            "timeoutSeconds": 2,
+        },
+    }
+    if resources:
+        container["resources"] = resources
+
+    pod_spec: dict[str, Any] = {
+        "containers": [container],
     }
     if node_selector:
         pod_spec["nodeSelector"] = node_selector

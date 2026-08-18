@@ -92,8 +92,14 @@ def label_worker_nodes(args, ctx):
     import json
 
     result = oc(
-        "get", "nodes", "-l", "node-role.kubernetes.io/worker",
-        "-o", "json", check=False, log_stdout=False,
+        "get",
+        "nodes",
+        "-l",
+        "node-role.kubernetes.io/worker",
+        "-o",
+        "json",
+        check=False,
+        log_stdout=False,
     )
     if result.returncode != 0 or not result.stdout.strip():
         return "No worker nodes found"
@@ -104,10 +110,7 @@ def label_worker_nodes(args, ctx):
 
     for node in nodes_data.get("items", []):
         conditions = node.get("status", {}).get("conditions", [])
-        ready = any(
-            c.get("type") == "Ready" and c.get("status") == "True"
-            for c in conditions
-        )
+        ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
         if not ready:
             continue
 
@@ -126,7 +129,10 @@ def label_worker_nodes(args, ctx):
         return "No Ready worker nodes found"
 
     oc(
-        "label", "node", best_node, "--overwrite",
+        "label",
+        "node",
+        best_node,
+        "--overwrite",
         *[f"{k}={v}" for k, v in selector.items()],
         log_stdout=False,
     )
@@ -612,8 +618,14 @@ def _parse_cpu_to_milli(cpu: str) -> int:
 def _parse_mem_to_bytes(mem: str) -> int:
     """Convert a Kubernetes memory string to bytes."""
     suffixes = {
-        "Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4,
-        "K": 1000, "M": 1000**2, "G": 1000**3, "T": 1000**4,
+        "Ki": 1024,
+        "Mi": 1024**2,
+        "Gi": 1024**3,
+        "Ti": 1024**4,
+        "K": 1000,
+        "M": 1000**2,
+        "G": 1000**3,
+        "T": 1000**4,
     }
     for suffix, multiplier in suffixes.items():
         if mem.endswith(suffix):

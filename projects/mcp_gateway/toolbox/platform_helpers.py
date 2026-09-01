@@ -16,7 +16,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from projects.core.dsl.utils.k8s import oc, oc_get_json, oc_resource_exists
+import yaml
+
+from projects.core.dsl.utils.k8s import oc, oc_resource_exists
 
 logger = logging.getLogger(__name__)
 
@@ -158,56 +160,116 @@ def _get_cached_ref(repo_dir: Path) -> str | None:
 
 
 def detect_mcp_gateway_extension_crd_spec(
-    release_namespace: str, release_name: str = "mcp-gateway"
+    chart_ref: str, version_flag: list[str] | None = None
 ) -> dict[str, Any]:
-    """Look up the MCPGatewayExtension CRD owned by the mcp-gateway Helm
-    release and return its group, storage apiVersion, and supported spec
-    fields.
+    """Inspect the MCPGatewayExtension CRD shipped by the mcp-gateway chart
+    that is being installed and return its group, storage apiVersion, and
+    supported spec fields.
 
-    Reading this directly from the live CRD keeps the generated
-    MCPGatewayExtension custom resource in sync with whatever API
-    version/group the installed chart actually serves, regardless of
-    which mcp-gateway version/mode (release or nightly) was installed.
-    Matching on the Helm release annotations (rather than just the CRD
-    name) ensures the CRD actually managed by *this* install is picked,
-    even if an unrelated/orphaned MCPGatewayExtension CRD from another
-    API group also exists on the cluster.
+    Reads the CRD straight from the chart definition via ``helm show
+    crds`` (works for both an OCI chart ref + ``--version`` and a local
+    chart path), so the generated MCPGatewayExtension custom resource
+    always matches exactly the chart version this run is deploying,
+    independent of anything already present on the target cluster.
 
     Returns a dict with keys ``api_group``, ``api_version``, and
     ``has_private_host``.
     """
-    all_crds = oc_get_json("crd") or {"items": []}
-    candidates = [
-        c for c in all_crds.get("items", []) if "mcpgatewayextension" in c["metadata"]["name"]
-    ]
-    if not candidates:
-        raise RuntimeError("MCPGatewayExtension CRD not found on the cluster")
-
-    owned = [
-        c
-        for c in candidates
-        if c["metadata"].get("annotations", {}).get("meta.helm.sh/release-name") == release_name
-        and c["metadata"].get("annotations", {}).get("meta.helm.sh/release-namespace")
-        == release_namespace
-    ]
-    crd = owned[0] if owned else candidates[0]
-    spec = crd["spec"]
-    versions = spec["versions"]
-
-    storage_version = next((v for v in versions if v.get("storage")), versions[-1])
-    schema_props = (
-        storage_version.get("schema", {})
-        .get("openAPIV3Schema", {})
-        .get("properties", {})
-        .get("spec", {})
-        .get("properties", {})
+    result = subprocess.run(
+        ["helm", "show", "crds", chart_ref, *(version_flag or [])],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
     )
 
-    return {
-        "api_group": spec["group"],
-        "api_version": storage_version["name"],
-        "has_private_host": "privateHost" in schema_props,
-    }
+    for doc in yaml.safe_load_all(result.stdout):
+        if not doc or doc.get("kind") != "CustomResourceDefinition":
+            continue
+        if "mcpgatewayextension" not in doc["metadata"]["name"]:
+            continue
+
+        spec = doc["spec"]
+        versions = spec["versions"]
+        storage_version = next((v for v in versions if v.get("storage")), versions[-1])
+        schema_props = (
+            storage_version.get("schema", {})
+            .get("openAPIV3Schema", {})
+            .get("properties", {})
+            .get("spec", {})
+            .get("properties", {})
+        )
+        return {
+            "api_group": spec["group"],
+            "api_version": storage_version["name"],
+            "has_private_host": "privateHost" in schema_props,
+        }
+
+    raise RuntimeError(f"No MCPGatewayExtension CRD found in chart {chart_ref}")
+
+
+def prune_stale_mcp_gateway_extension_crds(expected_group: str) -> list[str]:
+    """Remove any MCPGatewayExtension-family CRD (and its CR instances)
+    whose API group doesn't match ``expected_group``.
+
+    Different mcp-gateway chart versions have shipped this CRD under
+    different API groups (e.g. ``mcp.kagenti.com`` before ``mcp.kuadrant.io``).
+    Running this after determining the current chart's group ensures a
+    cluster previously used with a different chart version doesn't keep
+    stale CRDs/CRs around alongside the ones the current chart defines.
+
+    Returns the list of CRD names that were removed.
+    """
+    result = oc("get", "crd", "-o", "name", check=False, log_stdout=False)
+    stale = [
+        line.split("/", 1)[-1]
+        for line in result.stdout.splitlines()
+        if "mcpgatewayextension" in line and not line.endswith(f".{expected_group}")
+    ]
+
+    for crd_name in stale:
+        _remove_finalizers_for_crd(crd_name)
+        oc("delete", "crd", crd_name, "--ignore-not-found=true", "--timeout=60s", check=False)
+        if wait_for_crd_deletion(crd_name, timeout=60):
+            logger.info("Removed stale CRD %s (doesn't match current chart group %s)", crd_name, expected_group)
+        else:
+            oc(
+                "patch",
+                "crd",
+                crd_name,
+                "--type=merge",
+                "-p",
+                '{"metadata":{"finalizers":null}}',
+                check=False,
+            )
+            wait_for_crd_deletion(crd_name, timeout=30)
+
+    return stale
+
+
+def _remove_finalizers_for_crd(crd_name: str) -> None:
+    """Remove finalizers from all instances of a CRD so its deletion doesn't hang."""
+    resource_kind = crd_name.split(".", 1)[0]
+    result = oc(
+        "get",
+        resource_kind,
+        "--all-namespaces",
+        "-o",
+        'jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name}{"\\n"}{end}',
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return
+
+    for line in result.stdout.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        ns, _, name = line.partition("/")
+        patch_args = ["patch", resource_kind, name or ns, "--type=merge", "-p", '{"metadata":{"finalizers":null}}']
+        if name:
+            patch_args += ["-n", ns]
+        oc(*patch_args, check=False)
 
 
 def find_step(steps: list[dict], name: str) -> dict | None:

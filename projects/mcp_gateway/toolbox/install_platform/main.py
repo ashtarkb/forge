@@ -30,6 +30,7 @@ from projects.mcp_gateway.toolbox.platform_helpers import (
     detect_mcp_gateway_extension_crd_spec,
     find_step,
     patch_service_mesh_istio_version,
+    prune_stale_mcp_gateway_extension_crds,
     wait_for_namespace_termination,
 )
 
@@ -351,6 +352,8 @@ def install_mcp_gateway_instance(args, ctx):
         chart_version = ctx.inst.get("version")
         version_flag = ["--version", chart_version] if chart_version else []
 
+    ctx.chart_ref = chart_ref
+    ctx.chart_version_flag = version_flag
     ctx.mcp_host = _get_mcp_host()
 
     subprocess.run(
@@ -438,7 +441,16 @@ def create_mcp_gateway_extension(args, ctx):
 
     mcp_host = getattr(ctx, "mcp_host", _get_mcp_host())
     version = getattr(ctx, "inst", {}).get("version", "")
-    vspec = detect_mcp_gateway_extension_crd_spec(ctx.mcp_gateway_namespace)
+    vspec = detect_mcp_gateway_extension_crd_spec(ctx.chart_ref, ctx.chart_version_flag)
+
+    pruned = prune_stale_mcp_gateway_extension_crds(vspec["api_group"])
+    if pruned:
+        logger.info(
+            "Removed stale MCPGatewayExtension CRD(s) not matching current chart (%s): %s",
+            vspec["api_group"],
+            pruned,
+        )
+
     src_dir = env.ARTIFACT_DIR / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
 

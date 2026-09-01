@@ -127,7 +127,8 @@ def generate_metrics_from_kpis(
         kpis = test_entry.get("kpis", [])
         metrics: dict[str, Any] = {}
         for kpi in kpis:
-            kpi_id = kpi.get("id", "")
+            # Hierarchical entries use "id"; tolerate legacy/catalog "kpi_id".
+            kpi_id = kpi.get("id") or kpi.get("kpi_id") or ""
             if not kpi_id:
                 continue
             value = kpi.get("value")
@@ -141,6 +142,8 @@ def generate_metrics_from_kpis(
 
         if metrics:
             _write_json(run_dir / METRICS_FILE, metrics)
+        else:
+            warnings.append(f"No scalar metrics extracted for run_id={run_id!r}")
 
         labels = test_entry.get("labels", {})
         if labels:

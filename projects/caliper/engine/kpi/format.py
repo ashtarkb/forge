@@ -83,6 +83,9 @@ def transform_kpis_to_hierarchical_format(kpis: list[dict], model) -> dict:
 
         kpi_record: dict[str, Any] = kpi_model.copy()
         kpi_record["value"] = final_value
+        # Hierarchical schema v2 nested KPIs use "id" (catalog uses "kpi_id").
+        if "kpi_id" in kpi_record:
+            kpi_record["id"] = kpi_record.pop("kpi_id")
 
         for fmt_key in "x_format", "y_format", "format":
             kpi_record.pop(fmt_key, None)
@@ -162,9 +165,9 @@ def flatten_hierarchical_kpis(data: dict[str, Any]) -> list[dict[str, Any]]:
         }
         for kpi in test.get("kpis", []):
             record = dict(test_base)
-            record["kpi_id"] = kpi.get("id")
+            record["kpi_id"] = kpi.get("id") or kpi.get("kpi_id")
             for k, v in kpi.items():
-                if k == "id":
+                if k in ("id", "kpi_id"):
                     pass
                 elif k == "labels":
                     record[k] = {} | test_base["labels"] | v

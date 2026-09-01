@@ -72,7 +72,7 @@ def validate_config(args, ctx):
     ctx.inst = config.get("mcp_gateway_instance", {})
     ctx.steps = config.get("steps", [])
     # Override upstream EOL pin (v1.26-latest) so Sail/OSSM 3 will install.
-    ctx.istio_version = config.get("istio_version", "v1.29-latest")
+    ctx.istio_version = config.get("istio_version", "v1.30-latest")
 
     wait_for_namespace_termination([ctx.mcp_gateway_namespace, ctx.gateway_namespace])
 

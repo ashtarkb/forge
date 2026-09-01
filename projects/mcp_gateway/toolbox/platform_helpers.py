@@ -25,7 +25,7 @@ _PLATFORM_CLONE_DIR = Path(os.environ.get("FORGE_BASE_DIR", "/tmp")) / "mcp-gw-p
 
 # Upstream mcp-gateway still pins EOL Istio (v1.26-latest). Current
 # servicemeshoperator3 / Sail rejects that for new installs.
-_DEFAULT_ISTIO_VERSION = "v1.29-latest"
+_DEFAULT_ISTIO_VERSION = "v1.30-latest"
 _ISTIO_VERSION_RE = re.compile(r"^(\s*version:\s*)\S+\s*$", re.MULTILINE)
 
 

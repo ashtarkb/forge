@@ -26,7 +26,8 @@ platform:
   platform_repo_subdir: config/openshift
   # Upstream mcp-gateway still pins EOL v1.26-latest; Sail/OSSM 3 rejects it.
   # Forge patches Istio + IstioCNI manifests to this version before apply.
-  istio_version: v1.29-latest
+  # Must match Sail/OSSM CRD enum on the cluster (1.29 is NOT listed there).
+  istio_version: v1.30-latest
 
   steps:
     - name: service-mesh-operator

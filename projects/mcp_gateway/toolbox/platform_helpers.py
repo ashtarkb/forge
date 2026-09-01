@@ -112,7 +112,9 @@ def clone_platform_repo(
             "Could not fetch '%s' from %s (%s) — falling back to 'main'",
             version,
             repo_url,
-            fetch_result.stderr.strip().splitlines()[-1] if fetch_result.stderr else "unknown error",
+            fetch_result.stderr.strip().splitlines()[-1]
+            if fetch_result.stderr
+            else "unknown error",
         )
         fetched_ref = "main"
         subprocess.run([*fetch_cmd, "main"], check=True, timeout=120)
@@ -231,7 +233,11 @@ def prune_stale_mcp_gateway_extension_crds(expected_group: str) -> list[str]:
         _remove_finalizers_for_crd(crd_name)
         oc("delete", "crd", crd_name, "--ignore-not-found=true", "--timeout=60s", check=False)
         if wait_for_crd_deletion(crd_name, timeout=60):
-            logger.info("Removed stale CRD %s (doesn't match current chart group %s)", crd_name, expected_group)
+            logger.info(
+                "Removed stale CRD %s (doesn't match current chart group %s)",
+                crd_name,
+                expected_group,
+            )
         else:
             oc(
                 "patch",
@@ -266,7 +272,14 @@ def _remove_finalizers_for_crd(crd_name: str) -> None:
         if not line:
             continue
         ns, _, name = line.partition("/")
-        patch_args = ["patch", resource_kind, name or ns, "--type=merge", "-p", '{"metadata":{"finalizers":null}}']
+        patch_args = [
+            "patch",
+            resource_kind,
+            name or ns,
+            "--type=merge",
+            "-p",
+            '{"metadata":{"finalizers":null}}',
+        ]
         if name:
             patch_args += ["-n", ns]
         oc(*patch_args, check=False)

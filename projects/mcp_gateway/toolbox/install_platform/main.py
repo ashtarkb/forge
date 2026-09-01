@@ -493,7 +493,9 @@ def create_mcp_gateway_extension(args, ctx):
     if vspec["has_private_host"]:
         spec["privateHost"] = f"mcp-gateway-istio.{ctx.gateway_namespace}.svc.cluster.local:8080"
 
-    extension_name = "mcp-gateway" if vspec["api_group"] == "mcp.kagenti.com" else "mcp-gateway-extension"
+    extension_name = (
+        "mcp-gateway" if vspec["api_group"] == "mcp.kagenti.com" else "mcp-gateway-extension"
+    )
     extension_cr = {
         "apiVersion": f"{vspec['api_group']}/{vspec['api_version']}",
         "kind": "MCPGatewayExtension",

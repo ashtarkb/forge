@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -21,6 +22,11 @@ logger = logging.getLogger(__name__)
 _PLATFORM_REPO_DEFAULT = "https://github.com/Kuadrant/mcp-gateway.git"
 _PLATFORM_SUBDIR_DEFAULT = "config/openshift"
 _PLATFORM_CLONE_DIR = Path(os.environ.get("FORGE_BASE_DIR", "/tmp")) / "mcp-gw-platform-manifests"
+
+# Upstream mcp-gateway still pins EOL Istio (v1.26-latest). Current
+# servicemeshoperator3 / Sail rejects that for new installs.
+_DEFAULT_ISTIO_VERSION = "v1.29-latest"
+_ISTIO_VERSION_RE = re.compile(r"^(\s*version:\s*)\S+\s*$", re.MULTILINE)
 
 
 def clone_platform_repo(
@@ -284,3 +290,42 @@ def _force_remove_namespace_finalizers(namespace: str) -> None:
         logger.info("Removed finalizers from namespace %s", namespace)
     except Exception as exc:
         logger.warning("Failed to remove finalizers from %s: %s", namespace, exc)
+
+
+def patch_service_mesh_istio_version(
+    kustomize_path: Path,
+    version: str = _DEFAULT_ISTIO_VERSION,
+) -> list[str]:
+    """Rewrite ``spec.version`` in Istio / IstioCNI manifests under *kustomize_path*.
+
+    Upstream mcp-gateway pins an EOL Istio tag that current Sail / OSSM 3
+    rejects. Forge patches the cloned manifests before ``oc apply -k``.
+
+    Returns the list of files that were modified.
+    """
+    if not version:
+        return []
+
+    patched: list[str] = []
+    for path in sorted(kustomize_path.rglob("*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        if "sailoperator.io" not in text and "kind: Istio" not in text:
+            continue
+        if "version:" not in text:
+            continue
+
+        new_text, n = _ISTIO_VERSION_RE.subn(rf"\g<1>{version}", text)
+        if n == 0 or new_text == text:
+            continue
+
+        path.write_text(new_text, encoding="utf-8")
+        patched.append(str(path))
+        logger.info("Patched Istio version -> %s in %s", version, path)
+
+    if not patched:
+        logger.warning(
+            "No Istio/IstioCNI version fields patched under %s (wanted %s)",
+            kustomize_path,
+            version,
+        )
+    return patched

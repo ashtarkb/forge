@@ -28,6 +28,7 @@ from projects.core.library import env
 from projects.core.orchestration.utils.k8s import ensure_namespace
 from projects.mcp_gateway.toolbox.platform_helpers import (
     find_step,
+    patch_service_mesh_istio_version,
     wait_for_namespace_termination,
 )
 
@@ -70,12 +71,15 @@ def validate_config(args, ctx):
     ctx.ctrl = config.get("mcp_gateway_controller", {})
     ctx.inst = config.get("mcp_gateway_instance", {})
     ctx.steps = config.get("steps", [])
+    # Override upstream EOL pin (v1.26-latest) so Sail/OSSM 3 will install.
+    ctx.istio_version = config.get("istio_version", "v1.29-latest")
 
     wait_for_namespace_termination([ctx.mcp_gateway_namespace, ctx.gateway_namespace])
 
     logger.info("Kustomize base: %s", ctx.kustomize_base)
     logger.info("MCP Gateway namespace: %s", ctx.mcp_gateway_namespace)
     logger.info("Gateway namespace: %s", ctx.gateway_namespace)
+    logger.info("Istio version override: %s", ctx.istio_version)
 
     ctx.node_selector = args.scheduling_node_selector or {}
 
@@ -172,6 +176,14 @@ def install_service_mesh_instance(args, ctx):
     if not kustomize_path.exists():
         raise FileNotFoundError(f"Kustomize directory not found: {kustomize_path}")
 
+    patched = patch_service_mesh_istio_version(kustomize_path, ctx.istio_version)
+    if patched:
+        logger.info(
+            "Patched %d service-mesh manifest(s) to Istio %s before apply",
+            len(patched),
+            ctx.istio_version,
+        )
+
     oc("apply", "-k", str(kustomize_path))
 
     if "wait_for_ready" in step:
@@ -190,20 +202,37 @@ def wait_service_mesh_ready(args, ctx):
     if not spec:
         return "No readiness spec, skipping"
 
-    payload = oc_get_json(
-        spec["kind"],
-        name=spec["name"],
-        namespace=spec.get("namespace"),
-        ignore_not_found=True,
+    kind = spec["kind"]
+    name = spec["name"]
+    namespace = spec.get("namespace")
+    resource = f"{kind}/{name}"
+
+    artifacts_dir = args.artifact_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    # Keep the latest full object on disk for post-mortem when Ready never arrives.
+    capture_args = ["get", resource, "-o", "json"]
+    if namespace:
+        capture_args.extend(["-n", namespace])
+    _capture_to_file(artifacts_dir / f"{kind}-{name}.json", *capture_args)
+
+    # Compact condition dump stays in task.log so retries show Istio evolving.
+    jsonpath = (
+        r'{range .status.conditions[*]}{.type}={.status}'
+        r' reason={.reason} msg={.message}{"\n"}{end}'
     )
-    if not payload:
-        return (False, f"Waiting for {spec['kind']}/{spec['name']} to exist")
+    status_args = ["get", resource, "-o", f"jsonpath={jsonpath}"]
+    if namespace:
+        status_args.extend(["-n", namespace])
+    result = oc(*status_args, check=False)
 
-    conditions = payload.get("status", {}).get("conditions", [])
-    if any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions):
-        return f"{spec['kind']}/{spec['name']} is Ready"
+    if result.returncode != 0:
+        return (False, f"Waiting for {resource} to exist")
 
-    return (False, f"Waiting for {spec['kind']}/{spec['name']} Ready condition")
+    conditions = (result.stdout or "").strip()
+    if any(line.startswith("Ready=True") for line in conditions.splitlines()):
+        return f"{resource} is Ready"
+
+    return (False, f"Waiting for {resource} Ready condition")
 
 
 @task

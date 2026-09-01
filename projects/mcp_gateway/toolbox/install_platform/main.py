@@ -27,6 +27,7 @@ from projects.core.dsl.utils.k8s import oc, oc_apply, oc_get_json
 from projects.core.library import env
 from projects.core.orchestration.utils.k8s import ensure_namespace
 from projects.mcp_gateway.toolbox.platform_helpers import (
+    detect_mcp_gateway_extension_crd_spec,
     find_step,
     patch_service_mesh_istio_version,
     wait_for_namespace_termination,
@@ -437,7 +438,7 @@ def create_mcp_gateway_extension(args, ctx):
 
     mcp_host = getattr(ctx, "mcp_host", _get_mcp_host())
     version = getattr(ctx, "inst", {}).get("version", "")
-    vspec = _version_spec(version)
+    vspec = detect_mcp_gateway_extension_crd_spec()
     src_dir = env.ARTIFACT_DIR / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
 
@@ -480,11 +481,12 @@ def create_mcp_gateway_extension(args, ctx):
     if vspec["has_private_host"]:
         spec["privateHost"] = f"mcp-gateway-istio.{ctx.gateway_namespace}.svc.cluster.local:8080"
 
+    extension_name = "mcp-gateway" if vspec["api_group"] == "mcp.kagenti.com" else "mcp-gateway-extension"
     extension_cr = {
-        "apiVersion": f"{vspec['api_group']}/v1alpha1",
+        "apiVersion": f"{vspec['api_group']}/{vspec['api_version']}",
         "kind": "MCPGatewayExtension",
         "metadata": {
-            "name": vspec["extension_name"],
+            "name": extension_name,
             "namespace": ctx.mcp_gateway_namespace,
         },
         "spec": spec,
@@ -493,7 +495,8 @@ def create_mcp_gateway_extension(args, ctx):
 
     return (
         f"MCPGatewayExtension + ReferenceGrant created "
-        f"(version={version or 'latest'}, api_group={vspec['api_group']}, host={mcp_host})"
+        f"(version={version or 'latest'}, apiVersion={vspec['api_group']}/{vspec['api_version']}, "
+        f"host={mcp_host})"
     )
 
 
@@ -617,26 +620,6 @@ def _capture_to_file(path: Path, *oc_args: str) -> None:
     oc(*oc_args, check=False, log_stdout=False, stdout_dest=path)
 
 
-def _parse_version(version: str) -> tuple[int, ...]:
-    """Parse a semver string into a comparable tuple of ints."""
-    import re
-
-    return tuple(int(x) for x in re.findall(r"\d+", version)[:3])
-
-
-def _version_gte(version: str, minimum: str) -> bool:
-    """Check if a semver version string is >= minimum."""
-    try:
-        return _parse_version(version) >= _parse_version(minimum)
-    except (ValueError, IndexError):
-        logger.warning(
-            "Could not parse version %r for comparison against %s, assuming older",
-            version,
-            minimum,
-        )
-        return False
-
-
 def _parse_cpu_to_milli(cpu: str) -> int:
     """Convert a Kubernetes CPU string to millicores."""
     if cpu.endswith("m"):
@@ -660,28 +643,6 @@ def _parse_mem_to_bytes(mem: str) -> int:
         if mem.endswith(suffix):
             return int(mem[: -len(suffix)]) * multiplier
     return int(mem)
-
-
-def _version_spec(version: str) -> dict[str, Any]:
-    """Return version-specific resource parameters.
-
-    Known breakpoints (verified via ``helm template``):
-      >=0.7.0  api_group=mcp.kuadrant.io, name=mcp-gateway-extension, +privateHost
-       <0.7.0  api_group=mcp.kagenti.com,  name=mcp-gateway,           no privateHost
-    """
-    is_070_plus = _version_gte(version, "0.7.0") if version else True
-
-    if is_070_plus:
-        return {
-            "api_group": "mcp.kuadrant.io",
-            "extension_name": "mcp-gateway-extension",
-            "has_private_host": True,
-        }
-    return {
-        "api_group": "mcp.kagenti.com",
-        "extension_name": "mcp-gateway",
-        "has_private_host": False,
-    }
 
 
 if __name__ == "__main__":

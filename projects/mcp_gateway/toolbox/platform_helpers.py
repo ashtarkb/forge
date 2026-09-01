@@ -14,8 +14,9 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
-from projects.core.dsl.utils.k8s import oc, oc_resource_exists
+from projects.core.dsl.utils.k8s import oc, oc_get_json, oc_resource_exists
 
 logger = logging.getLogger(__name__)
 
@@ -29,21 +30,29 @@ _DEFAULT_ISTIO_VERSION = "v1.30-latest"
 _ISTIO_VERSION_RE = re.compile(r"^(\s*version:\s*)\S+\s*$", re.MULTILINE)
 
 
+_RESOLVED_REF_MARKER = ".forge-resolved-ref"
+
+
 def clone_platform_repo(
     *,
     version: str,
     repo_url: str = _PLATFORM_REPO_DEFAULT,
     subdir: str = _PLATFORM_SUBDIR_DEFAULT,
 ) -> Path:
-    """Sparse-checkout the platform manifests from the upstream mcp-gateway repo.
+    """Fetch the platform manifests from the upstream mcp-gateway repo at ``version``.
 
-    Uses ``version`` as the git ref (tag or branch). Falls back to ``main``
-    if the ref doesn't exist.  The checkout is shallow and only fetches the
-    ``subdir`` subtree to keep it fast.
+    ``version`` may be a branch, a tag, or a commit SHA. Each is fetched
+    directly by name/SHA (``git fetch --depth 1 origin <version>``), which
+    upstream Git hosts support for any ref or reachable commit. If that
+    fetch fails (e.g. the ref/commit doesn't exist), this falls back to the
+    repo's ``main`` branch so installs can still proceed with a warning.
 
-    The clone is placed under ``$FORGE_BASE_DIR/mcp-gw-platform-manifests/``
+    Only the ``subdir`` subtree is checked out (sparse checkout) to keep
+    this fast.
+
+    The checkout is placed under ``$FORGE_BASE_DIR/mcp-gw-platform-manifests/``
     (defaults to ``/tmp/mcp-gw-platform-manifests/``) so that subsequent
-    phases (e.g. cleanup) can reuse it without cloning again.  Call
+    phases (e.g. cleanup) can reuse it without re-fetching. Call
     :func:`cleanup_platform_clone` at the end of the last phase to remove it.
 
     Returns the absolute path to the checked-out subdirectory
@@ -54,54 +63,74 @@ def clone_platform_repo(
 
     if result_path.is_dir():
         cached_ref = _get_cached_ref(repo_dir)
-        requested_ref = _resolve_git_ref(repo_url, version)
-        if cached_ref and cached_ref != requested_ref:
-            logger.info(
-                "Cached clone ref (%s) differs from requested (%s), re-cloning",
-                cached_ref,
-                requested_ref,
-            )
-            shutil.rmtree(str(_PLATFORM_CLONE_DIR), ignore_errors=True)
-        else:
-            logger.info("Platform manifests already cloned at %s, reusing", result_path)
+        if cached_ref == version:
+            logger.info("Platform manifests already fetched at %s, reusing", result_path)
             return result_path
+        logger.info(
+            "Cached clone ref (%s) differs from requested (%s), re-fetching",
+            cached_ref,
+            version,
+        )
+        shutil.rmtree(str(_PLATFORM_CLONE_DIR), ignore_errors=True)
 
     _PLATFORM_CLONE_DIR.mkdir(parents=True, exist_ok=True)
+    repo_dir.mkdir(parents=True, exist_ok=True)
 
-    ref = _resolve_git_ref(repo_url, version)
+    subprocess.run(["git", "init", "-q", str(repo_dir)], check=True, timeout=30)
+    subprocess.run(
+        ["git", "-C", str(repo_dir), "remote", "add", "origin", repo_url],
+        check=True,
+        timeout=30,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo_dir), "sparse-checkout", "set", subdir],
+        check=True,
+        timeout=30,
+    )
+
+    fetch_cmd = [
+        "git",
+        "-C",
+        str(repo_dir),
+        "fetch",
+        "--depth",
+        "1",
+        "--filter=blob:none",
+        "origin",
+    ]
+    fetched_ref = version
+    fetch_result = subprocess.run(
+        [*fetch_cmd, version],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if fetch_result.returncode != 0:
+        logger.warning(
+            "Could not fetch '%s' from %s (%s) — falling back to 'main'",
+            version,
+            repo_url,
+            fetch_result.stderr.strip().splitlines()[-1] if fetch_result.stderr else "unknown error",
+        )
+        fetched_ref = "main"
+        subprocess.run([*fetch_cmd, "main"], check=True, timeout=120)
 
     logger.info(
-        "Cloning platform manifests from %s (ref=%s, subdir=%s)",
+        "Fetched platform manifests from %s (ref=%s, subdir=%s)",
         repo_url,
-        ref,
+        fetched_ref,
         subdir,
     )
     subprocess.run(
-        [
-            "git",
-            "clone",
-            "--depth",
-            "1",
-            "--filter=blob:none",
-            "--sparse",
-            "--branch",
-            ref,
-            repo_url,
-            str(repo_dir),
-        ],
-        check=True,
-        timeout=120,
-    )
-    subprocess.run(
-        ["git", "sparse-checkout", "set", subdir],
-        cwd=str(repo_dir),
+        ["git", "-C", str(repo_dir), "checkout", "-q", "FETCH_HEAD"],
         check=True,
         timeout=30,
     )
 
     if not result_path.is_dir():
-        raise FileNotFoundError(f"Expected directory {result_path} not found after sparse checkout")
+        raise FileNotFoundError(f"Expected directory {result_path} not found after checkout")
 
+    (repo_dir / _RESOLVED_REF_MARKER).write_text(version)
     logger.info("Platform manifests available at %s", result_path)
     return result_path
 
@@ -120,49 +149,53 @@ def cleanup_platform_clone() -> None:
 
 
 def _get_cached_ref(repo_dir: Path) -> str | None:
-    """Return the current HEAD ref of a cached clone, or None if unreadable."""
+    """Return the version string a cached clone was fetched for, or None if unknown."""
+    marker = repo_dir / _RESOLVED_REF_MARKER
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(repo_dir),
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
-        )
-        return result.stdout.strip() or None
-    except (subprocess.SubprocessError, OSError):
+        return marker.read_text().strip() or None
+    except OSError:
         return None
 
 
-def _resolve_git_ref(repo_url: str, version: str) -> str:
-    """Check if ``version`` exists as a remote ref; fall back to ``main``."""
-    result = subprocess.run(
-        ["git", "ls-remote", "--exit-code", repo_url, f"refs/tags/{version}"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
-    if result.returncode == 0:
-        return version
+def detect_mcp_gateway_extension_crd_spec() -> dict[str, Any]:
+    """Look up the MCPGatewayExtension CRD already installed on the cluster
+    (by the mcp-gateway Helm chart) and return its group, storage
+    apiVersion, and supported spec fields.
 
-    result = subprocess.run(
-        ["git", "ls-remote", "--exit-code", repo_url, f"refs/heads/{version}"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
-    if result.returncode == 0:
-        return version
+    Reading this directly from the live CRD keeps the generated
+    MCPGatewayExtension custom resource in sync with whatever API
+    version/group the installed chart actually serves, regardless of
+    which mcp-gateway version/mode (release or nightly) was installed.
 
-    logger.warning(
-        "Git ref '%s' not found in %s — falling back to 'main'",
-        version,
-        repo_url,
+    Returns a dict with keys ``api_group``, ``api_version``, and
+    ``has_private_host``.
+    """
+    result = oc("get", "crd", "-o", "name", check=False, log_stdout=False)
+    crd_name = next(
+        (line.split("/", 1)[-1] for line in result.stdout.splitlines() if "mcpgatewayextension" in line),
+        None,
     )
-    return "main"
+    if not crd_name:
+        raise RuntimeError("MCPGatewayExtension CRD not found on the cluster")
+
+    crd = oc_get_json("crd", name=crd_name)
+    spec = crd["spec"]
+    versions = spec["versions"]
+
+    storage_version = next((v for v in versions if v.get("storage")), versions[-1])
+    schema_props = (
+        storage_version.get("schema", {})
+        .get("openAPIV3Schema", {})
+        .get("properties", {})
+        .get("spec", {})
+        .get("properties", {})
+    )
+
+    return {
+        "api_group": spec["group"],
+        "api_version": storage_version["name"],
+        "has_private_host": "privateHost" in schema_props,
+    }
 
 
 def find_step(steps: list[dict], name: str) -> dict | None:

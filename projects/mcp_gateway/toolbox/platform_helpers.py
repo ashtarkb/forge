@@ -157,28 +157,40 @@ def _get_cached_ref(repo_dir: Path) -> str | None:
         return None
 
 
-def detect_mcp_gateway_extension_crd_spec() -> dict[str, Any]:
-    """Look up the MCPGatewayExtension CRD already installed on the cluster
-    (by the mcp-gateway Helm chart) and return its group, storage
-    apiVersion, and supported spec fields.
+def detect_mcp_gateway_extension_crd_spec(
+    release_namespace: str, release_name: str = "mcp-gateway"
+) -> dict[str, Any]:
+    """Look up the MCPGatewayExtension CRD owned by the mcp-gateway Helm
+    release and return its group, storage apiVersion, and supported spec
+    fields.
 
     Reading this directly from the live CRD keeps the generated
     MCPGatewayExtension custom resource in sync with whatever API
     version/group the installed chart actually serves, regardless of
     which mcp-gateway version/mode (release or nightly) was installed.
+    Matching on the Helm release annotations (rather than just the CRD
+    name) ensures the CRD actually managed by *this* install is picked,
+    even if an unrelated/orphaned MCPGatewayExtension CRD from another
+    API group also exists on the cluster.
 
     Returns a dict with keys ``api_group``, ``api_version``, and
     ``has_private_host``.
     """
-    result = oc("get", "crd", "-o", "name", check=False, log_stdout=False)
-    crd_name = next(
-        (line.split("/", 1)[-1] for line in result.stdout.splitlines() if "mcpgatewayextension" in line),
-        None,
-    )
-    if not crd_name:
+    all_crds = oc_get_json("crd") or {"items": []}
+    candidates = [
+        c for c in all_crds.get("items", []) if "mcpgatewayextension" in c["metadata"]["name"]
+    ]
+    if not candidates:
         raise RuntimeError("MCPGatewayExtension CRD not found on the cluster")
 
-    crd = oc_get_json("crd", name=crd_name)
+    owned = [
+        c
+        for c in candidates
+        if c["metadata"].get("annotations", {}).get("meta.helm.sh/release-name") == release_name
+        and c["metadata"].get("annotations", {}).get("meta.helm.sh/release-namespace")
+        == release_namespace
+    ]
+    crd = owned[0] if owned else candidates[0]
     spec = crd["spec"]
     versions = spec["versions"]
 

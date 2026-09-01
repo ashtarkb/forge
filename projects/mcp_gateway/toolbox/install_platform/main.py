@@ -438,7 +438,7 @@ def create_mcp_gateway_extension(args, ctx):
 
     mcp_host = getattr(ctx, "mcp_host", _get_mcp_host())
     version = getattr(ctx, "inst", {}).get("version", "")
-    vspec = detect_mcp_gateway_extension_crd_spec()
+    vspec = detect_mcp_gateway_extension_crd_spec(ctx.mcp_gateway_namespace)
     src_dir = env.ARTIFACT_DIR / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
 

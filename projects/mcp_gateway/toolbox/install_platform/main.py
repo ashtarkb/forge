@@ -217,7 +217,7 @@ def wait_service_mesh_ready(args, ctx):
 
     # Compact condition dump stays in task.log so retries show Istio evolving.
     jsonpath = (
-        r'{range .status.conditions[*]}{.type}={.status}'
+        r"{range .status.conditions[*]}{.type}={.status}"
         r' reason={.reason} msg={.message}{"\n"}{end}'
     )
     status_args = ["get", resource, "-o", f"jsonpath={jsonpath}"]

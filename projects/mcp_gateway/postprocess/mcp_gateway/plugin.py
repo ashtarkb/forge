@@ -44,6 +44,10 @@ class MCPGatewayPlugin(PostProcessingPlugin):
     def compute_kpis(self, model: UnifiedRunModel) -> list[dict[str, Any]]:
         return self.kpi_handler.compute_kpis(model)
 
+    def kpi_catalog(self) -> list[dict[str, Any]]:
+        """Expose KPI metadata so hierarchical format keeps computed KPIs."""
+        return self.kpi_handler.get_catalog()
+
 
 def get_plugin() -> PostProcessingPlugin:
     """Return the MCP Gateway plugin instance."""

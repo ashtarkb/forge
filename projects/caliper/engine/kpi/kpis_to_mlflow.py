@@ -14,14 +14,114 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from .dataclasses import SourceInfo
 
 logger = logging.getLogger(__name__)
 
 METRICS_FILE = "metrics.json"
 PARAMETERS_FILE = "parameters.json"
 TEST_LABELS_MARKER = "__test_labels__.yaml"
+
+
+@dataclass
+class HierarchicalKpi:
+    """KPI entry in hierarchical format (schema v2)."""
+
+    id: str  # KPI identifier (maps to kpi_id in flat format)  # noqa: A003
+    value: Any  # KPI value (scalar or structured)
+    name: str = ""
+    unit: str = ""
+    higher_is_better: bool = False
+    is_curve: bool = False
+    help: str = ""  # noqa: A003
+    description: str = ""
+    category: str = ""
+    tags: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HierarchicalKpi:
+        """Create HierarchicalKpi from dictionary data."""
+        return cls(
+            id=data.get("id", ""),
+            value=data.get("value"),
+            name=data.get("name", ""),
+            unit=data.get("unit", ""),
+            higher_is_better=data.get("higher_is_better", False),
+            is_curve=data.get("is_curve", False),
+            help=data.get("help", ""),
+            description=data.get("description", ""),
+            category=data.get("category", ""),
+            tags=data.get("tags", []),
+        )
+
+
+@dataclass
+class TestMetadata:
+    """Test metadata in hierarchical format."""
+
+    timestamp: str | None = None
+    source: SourceInfo | None = None
+    run_id: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TestMetadata:
+        """Create TestMetadata from dictionary data."""
+        source_data = data.get("source")
+        source = SourceInfo.from_dict(source_data) if isinstance(source_data, dict) else None
+        return cls(
+            timestamp=data.get("timestamp"),
+            source=source,
+            run_id=data.get("run_id", ""),
+        )
+
+
+@dataclass
+class HierarchicalTest:
+    """Test entry in hierarchical format (schema v2)."""
+
+    run_id: str
+    labels: dict[str, Any]
+    metadata: TestMetadata
+    kpis: list[HierarchicalKpi] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HierarchicalTest:
+        """Create HierarchicalTest from dictionary data."""
+        metadata_data = data.get("metadata", {})
+        metadata = TestMetadata.from_dict(metadata_data)
+
+        kpis_data = data.get("kpis", [])
+        kpis = [HierarchicalKpi.from_dict(kpi) for kpi in kpis_data]
+
+        return cls(
+            run_id=data.get("run_id", ""),
+            labels=data.get("labels", {}),
+            metadata=metadata,
+            kpis=kpis,
+        )
+
+
+@dataclass
+class HierarchicalKpiData:
+    """Hierarchical KPI document structure (schema v2)."""
+
+    schema_version: str
+    tests: list[HierarchicalTest] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HierarchicalKpiData:
+        """Create HierarchicalKpiData from dictionary data."""
+        tests_data = data.get("tests", [])
+        tests = [HierarchicalTest.from_dict(test) for test in tests_data]
+
+        return cls(
+            schema_version=data.get("schema_version", ""),
+            tests=tests,
+        )
 
 
 def _build_run_dir_index(artifact_tree: Path) -> dict[str, Path]:
@@ -40,15 +140,15 @@ def _build_run_dir_index(artifact_tree: Path) -> dict[str, Path]:
 
 
 def _is_scalar(value: Any) -> bool:
-    """Check if a KPI value is a scalar number (not 2D data)."""
+    """Check if a KPI value is a scalar number (not curve data)."""
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 
-def _extract_2d_points(value: Any) -> list[dict[str, float]] | None:
-    """Extract sorted (x, y) data points from a 2D KPI value.
+def _extract_curve_points(value: Any) -> list[dict[str, float]] | None:
+    """Extract sorted (x, y) data points from a curve KPI value.
 
     Returns a list of ``{"x": ..., "y": ...}`` dicts sorted by x,
-    or ``None`` if the value is not a valid 2D structure.
+    or ``None`` if the value is not a valid curve structure.
     """
     if not isinstance(value, dict):
         return None
@@ -96,13 +196,19 @@ def generate_metrics_from_kpis(
         raise FileNotFoundError(f"kpis.json not found: {kpis_json_path}")
 
     with kpis_json_path.open(encoding="utf-8") as f:
-        data = json.load(f)
+        raw_data = json.load(f)
 
-    if not isinstance(data, dict) or data.get("schema_version") != "2":
+    if not isinstance(raw_data, dict) or raw_data.get("schema_version") != "2":
         return {"status": "skipped", "reason": "Not a schema v2 kpis.json"}
 
-    tests = data.get("tests", [])
-    if not tests:
+    # Parse into typed dataclass structure
+    try:
+        kpi_data = HierarchicalKpiData.from_dict(raw_data)
+    except Exception as e:
+        logger.error("Failed to parse KPI data: %s", e)
+        return {"status": "skipped", "reason": f"Invalid KPI data structure: {e}"}
+
+    if not kpi_data.tests:
         return {"status": "skipped", "reason": "No tests in kpis.json"}
 
     run_dir_index = _build_run_dir_index(artifact_tree)
@@ -113,41 +219,38 @@ def generate_metrics_from_kpis(
     written = 0
     warnings: list[str] = []
 
-    for test_entry in tests:
-        run_id = test_entry.get("run_id", "")
-        test_base_path = (
-            test_entry.get("metadata", {}).get("source", {}).get("test_base_path", run_id)
-        )
+    for test in kpi_data.tests:
+        # Determine test base path for directory matching
+        test_base_path = test.run_id
+        if test.metadata.source:
+            test_base_path = test.metadata.source.test_base_path or test.run_id
 
-        run_dir = run_dir_index.get(test_base_path) or run_dir_index.get(run_id)
+        run_dir = run_dir_index.get(test_base_path) or run_dir_index.get(test.run_id)
         if run_dir is None:
-            warnings.append(f"No matching directory for run_id={run_id!r}")
+            warnings.append(f"No matching directory for run_id={test.run_id!r}")
             continue
 
-        kpis = test_entry.get("kpis", [])
+        # Process KPIs with type safety
         metrics: dict[str, Any] = {}
-        for kpi in kpis:
-            # Hierarchical entries use "id"; tolerate legacy/catalog "kpi_id".
-            kpi_id = kpi.get("id") or kpi.get("kpi_id") or ""
-            if not kpi_id:
+        for kpi in test.kpis:
+            if not kpi.id:
                 continue
-            value = kpi.get("value")
-            is_2d = kpi.get("is_2d", False)
-            if is_2d:
-                points = _extract_2d_points(value)
+
+            if kpi.is_curve:
+                points = _extract_curve_points(kpi.value)
                 if points:
-                    metrics[kpi_id] = points
-            elif _is_scalar(value):
-                metrics[kpi_id] = value
+                    metrics[kpi.id] = points
+            elif _is_scalar(kpi.value):
+                metrics[kpi.id] = kpi.value
 
         if metrics:
             _write_json(run_dir / METRICS_FILE, metrics)
         else:
             warnings.append(f"No scalar metrics extracted for run_id={run_id!r}")
 
-        labels = test_entry.get("labels", {})
-        if labels:
-            params = {str(k): ("" if v is None else str(v)) for k, v in labels.items()}
+        # Process labels with type safety
+        if test.labels:
+            params = {str(k): ("" if v is None else str(v)) for k, v in test.labels.items()}
             _write_json(run_dir / PARAMETERS_FILE, params)
 
         written += 1
@@ -155,7 +258,7 @@ def generate_metrics_from_kpis(
     result: dict[str, Any] = {
         "status": "success",
         "tests_processed": written,
-        "total_tests": len(tests),
+        "total_tests": len(kpi_data.tests),
     }
     if warnings:
         result["warnings"] = warnings
@@ -165,7 +268,7 @@ def generate_metrics_from_kpis(
     logger.info(
         "Generated metrics.json for %d/%d test(s) from %s",
         written,
-        len(tests),
+        len(kpi_data.tests),
         kpis_json_path.name,
     )
     return result

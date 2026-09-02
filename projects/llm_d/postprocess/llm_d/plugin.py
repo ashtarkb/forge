@@ -33,7 +33,7 @@ analysis_config = AnalysisConfig(
             "max_relative_regression": 0.15,  # 15% threshold (LLM performance can vary more)
             "min_baseline_points": 2,  # Require at least 2 baseline points for reliability
         },
-        "TWO_DIM_AUC_CHANGE": {
+        "CURVE_AUC_CHANGE": {
             "max_relative_regression": 0.35,  # 35% threshold (LLM performance can vary more)
             "min_baseline_points": 2,  # Require at least 2 baseline points for reliability
         },

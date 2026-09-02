@@ -7,6 +7,10 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from projects.caliper.engine.kpi import (
+    KpiRecord,
+    SourceInfo,
+)
 from projects.caliper.postprocess.helpers.visualization_utils import (
     create_report_filename,
 )
@@ -56,7 +60,7 @@ def generate_kpi_report(
     # Compute KPIs for the first record (representative of the test)
     # We can compute KPIs directly from the records without creating a full model
 
-    from projects.caliper.engine.kpi import get_kpi_functions, is_2d_kpi
+    from projects.caliper.engine.kpi import get_kpi_functions, is_curve_kpi
 
     # Get the KPI functions from the GuideLLM module
     from projects.guidellm.postprocess.guidellm.parsing import kpis as kpis_module
@@ -70,33 +74,44 @@ def generate_kpi_report(
         try:
             value = kpi_func(first_record)
         except (TypeError, ValueError, KeyError):
-            if is_2d_kpi(kpi_func):
-                value = []  # Empty list for failed 2D KPIs
+            if is_curve_kpi(kpi_func):
+                value = []  # Empty list for failed curve KPIs
             else:
                 value = None  # None for missing/failed scalar KPIs
 
-        kpi_record = {
-            "kpi_id": kpi_id,
-            "value": value,
-            "unit": kpi_func._kpi_unit,
-            "help": kpi_func._kpi_help,
-            "format": getattr(kpi_func, "_kpi_format", "{:.2f}"),
-            "labels": {"higher_is_better": kpi_func._kpi_higher_is_better},
-        }
+        # Create structured KPI record using core dataclass
+        kpi_record = KpiRecord(
+            schema_version="1",
+            kpi_id=kpi_id,
+            value=value if value is not None else 0,  # KpiRecord requires non-null value
+            unit=kpi_func._kpi_unit,
+            run_id=first_record.test_base_path,
+            timestamp="",  # Not critical for display
+            labels={"higher_is_better": kpi_func._kpi_higher_is_better},
+            metadata={
+                "help": kpi_func._kpi_help,
+                "format": getattr(kpi_func, "_kpi_format", "{:.2f}"),
+                "is_curve": is_curve_kpi(kpi_func),
+            },
+            source=SourceInfo(
+                test_base_path=first_record.test_base_path,
+                plugin_module="guidellm.plotting.kpi_report",
+            ),
+        )
 
-        # Add 2D-specific metadata
-        if is_2d_kpi(kpi_func):
-            kpi_record["is_2d"] = True
-            kpi_record["x_unit"] = kpi_func._kpi_x_unit
-            kpi_record["x_help"] = kpi_func._kpi_x_help
-            kpi_record["x_format"] = getattr(kpi_func, "_kpi_x_format", "{:.1f}")
-            kpi_record["y_unit"] = getattr(kpi_func, "_kpi_y_unit", None) or kpi_func._kpi_unit
-            kpi_record["y_help"] = getattr(kpi_func, "_kpi_y_help", None) or kpi_func._kpi_help
-            kpi_record["y_format"] = getattr(kpi_func, "_kpi_y_format", "{:.1f}")
-        else:
-            kpi_record["is_2d"] = False
+        # Add 2D-specific metadata if applicable
+        if is_curve_kpi(kpi_func):
+            kpi_record.x_unit = kpi_func._kpi_x_unit
+            kpi_record.x_help = kpi_func._kpi_x_help
+            kpi_record.y_unit = getattr(kpi_func, "_kpi_y_unit", None) or kpi_func._kpi_unit
+            kpi_record.y_help = getattr(kpi_func, "_kpi_y_help", None) or kpi_func._kpi_help
+            # Add formatting info to metadata
+            kpi_record.metadata["x_format"] = getattr(kpi_func, "_kpi_x_format", "{:.1f}")
+            kpi_record.metadata["y_format"] = getattr(kpi_func, "_kpi_y_format", "{:.1f}")
 
-        kpi_data.append(kpi_record)
+        # Skip null values for display (can't create KpiRecord with None value)
+        if value is not None:
+            kpi_data.append(kpi_record.to_dict())
 
     # Extract metadata fields
     metadata = GuideLLMKpiHandler.extract_metadata(first_record)
@@ -140,12 +155,12 @@ def _generate_html(
     """Generate the HTML content for the KPI report."""
 
     # Sort KPIs by category and name
-    scalar_kpis = [kpi for kpi in kpi_data if not kpi.get("is_2d", False)]
-    twod_kpis = [kpi for kpi in kpi_data if kpi.get("is_2d", False)]
+    scalar_kpis = [kpi for kpi in kpi_data if not kpi.get("is_curve", False)]
+    curve_kpis = [kpi for kpi in kpi_data if kpi.get("is_curve", False)]
 
     # Sort within each category
     scalar_kpis.sort(key=lambda k: k["kpi_id"])
-    twod_kpis.sort(key=lambda k: k["kpi_id"])
+    curve_kpis.sort(key=lambda k: k["kpi_id"])
 
     html = f"""
 <!DOCTYPE html>
@@ -240,7 +255,7 @@ def _generate_html(
             border-radius: 5px;
             margin-bottom: 20px;
         }}
-        .twod-data {{
+        .curve-data {{
             font-family: 'Monaco', 'Menlo', monospace;
             font-size: 0.85em;
             background-color: #f8f9fa;
@@ -371,7 +386,7 @@ def _generate_html(
             </table>
 """
 
-    if twod_kpis:
+    if curve_kpis:
         html += """
             <h3>2D Metrics (Performance Curves)</h3>
             <table>
@@ -387,7 +402,7 @@ def _generate_html(
                 <tbody>
 """
 
-        for kpi in twod_kpis:
+        for kpi in curve_kpis:
             # Format 2D data points using decorator format strings
             data_points = kpi["value"]
             if data_points and len(data_points) > 0:
@@ -410,7 +425,7 @@ def _generate_html(
             html += f"""
                     <tr>
                         <td><strong>{escape(kpi["kpi_id"].replace("guidellm_", "").replace("_", " ").title())}</strong></td>
-                        <td class="twod-data">{escape(points_text)}</td>
+                        <td class="curve-data">{escape(points_text)}</td>
                         <td>{escape(str(kpi.get("x_unit", "unknown")))} - {escape(str(kpi.get("x_help", "")))}</td>
                         <td>{escape(str(kpi.get("y_unit", kpi["unit"])))} - {escape(str(kpi.get("y_help", "")))}</td>
                         <td class="kpi-help">{escape(str(kpi.get("help", "No description")))}</td>
@@ -453,7 +468,7 @@ def _generate_multi_test_kpi_report(
     Returns:
         Path to the generated HTML file
     """
-    from projects.caliper.engine.kpi import get_kpi_functions, is_2d_kpi
+    from projects.caliper.engine.kpi import get_kpi_functions, is_curve_kpi
     from projects.guidellm.postprocess.guidellm.parsing import kpis as kpis_module
     from projects.llm_d.postprocess.llm_d.parsing.kpis import GuideLLMKpiHandler
 
@@ -477,33 +492,44 @@ def _generate_multi_test_kpi_report(
             try:
                 value = kpi_func(record)
             except (TypeError, ValueError, KeyError):
-                if is_2d_kpi(kpi_func):
-                    value = []  # Empty list for failed 2D KPIs
+                if is_curve_kpi(kpi_func):
+                    value = []  # Empty list for failed curve KPIs
                 else:
                     value = None  # None for missing/failed scalar KPIs
 
-            kpi_record = {
-                "kpi_id": kpi_id,
-                "value": value,
-                "unit": kpi_func._kpi_unit,
-                "help": kpi_func._kpi_help,
-                "format": getattr(kpi_func, "_kpi_format", "{:.2f}"),
-                "labels": {"higher_is_better": kpi_func._kpi_higher_is_better},
-            }
+            # Create structured KPI record using core dataclass
+            kpi_record = KpiRecord(
+                schema_version="1",
+                kpi_id=kpi_id,
+                value=value if value is not None else 0,  # KpiRecord requires non-null value
+                unit=kpi_func._kpi_unit,
+                run_id=record.test_base_path,
+                timestamp="",  # Not critical for display
+                labels={"higher_is_better": kpi_func._kpi_higher_is_better},
+                metadata={
+                    "help": kpi_func._kpi_help,
+                    "format": getattr(kpi_func, "_kpi_format", "{:.2f}"),
+                    "is_curve": is_curve_kpi(kpi_func),
+                },
+                source=SourceInfo(
+                    test_base_path=record.test_base_path,
+                    plugin_module="guidellm.plotting.kpi_report",
+                ),
+            )
 
-            # Add 2D-specific metadata
-            if is_2d_kpi(kpi_func):
-                kpi_record["is_2d"] = True
-                kpi_record["x_unit"] = kpi_func._kpi_x_unit
-                kpi_record["x_help"] = kpi_func._kpi_x_help
-                kpi_record["x_format"] = getattr(kpi_func, "_kpi_x_format", "{:.1f}")
-                kpi_record["y_unit"] = getattr(kpi_func, "_kpi_y_unit", None) or kpi_func._kpi_unit
-                kpi_record["y_help"] = getattr(kpi_func, "_kpi_y_help", None) or kpi_func._kpi_help
-                kpi_record["y_format"] = getattr(kpi_func, "_kpi_y_format", "{:.1f}")
-            else:
-                kpi_record["is_2d"] = False
+            # Add 2D-specific metadata if applicable
+            if is_curve_kpi(kpi_func):
+                kpi_record.x_unit = kpi_func._kpi_x_unit
+                kpi_record.x_help = kpi_func._kpi_x_help
+                kpi_record.y_unit = getattr(kpi_func, "_kpi_y_unit", None) or kpi_func._kpi_unit
+                kpi_record.y_help = getattr(kpi_func, "_kpi_y_help", None) or kpi_func._kpi_help
+                # Add formatting info to metadata
+                kpi_record.metadata["x_format"] = getattr(kpi_func, "_kpi_x_format", "{:.1f}")
+                kpi_record.metadata["y_format"] = getattr(kpi_func, "_kpi_y_format", "{:.1f}")
 
-            kpi_data.append(kpi_record)
+            # Skip null values for display (can't create KpiRecord with None value)
+            if value is not None:
+                kpi_data.append(kpi_record.to_dict())
 
         # Extract metadata and test info
         metadata = GuideLLMKpiHandler.extract_metadata(record)
@@ -657,7 +683,7 @@ def _generate_multi_test_html(
             border-radius: 5px;
             margin-bottom: 20px;
         }}
-        .twod-data {{
+        .curve-data {{
             font-family: 'Monaco', 'Menlo', monospace;
             font-size: 0.85em;
             background-color: #f8f9fa;
@@ -715,10 +741,10 @@ def _generate_test_section_html(section: dict) -> str:
     section_title = section["section_title"]
 
     # Sort KPIs
-    scalar_kpis = [kpi for kpi in kpi_data if not kpi.get("is_2d", False)]
-    twod_kpis = [kpi for kpi in kpi_data if kpi.get("is_2d", False)]
+    scalar_kpis = [kpi for kpi in kpi_data if not kpi.get("is_curve", False)]
+    curve_kpis = [kpi for kpi in kpi_data if kpi.get("is_curve", False)]
     scalar_kpis.sort(key=lambda k: k["kpi_id"])
-    twod_kpis.sort(key=lambda k: k["kpi_id"])
+    curve_kpis.sort(key=lambda k: k["kpi_id"])
 
     html_parts = []
 
@@ -809,7 +835,7 @@ def _generate_test_section_html(section: dict) -> str:
                     </tbody>
                 </table>""")
 
-    if twod_kpis:
+    if curve_kpis:
         html_parts.append("""
                 <h4>2D Metrics (Performance Curves)</h4>
                 <table>
@@ -824,7 +850,7 @@ def _generate_test_section_html(section: dict) -> str:
                     </thead>
                     <tbody>""")
 
-        for kpi in twod_kpis:
+        for kpi in curve_kpis:
             # Format 2D data points
             data_points = kpi["value"]
             if data_points and len(data_points) > 0:
@@ -847,7 +873,7 @@ def _generate_test_section_html(section: dict) -> str:
             html_parts.append(f"""
                         <tr>
                             <td><strong>{escape(kpi["kpi_id"].replace("guidellm_", "").replace("_", " ").title())}</strong></td>
-                            <td class="twod-data">{escape(points_text)}</td>
+                            <td class="curve-data">{escape(points_text)}</td>
                             <td>{escape(str(kpi.get("x_unit", "unknown")))} - {escape(str(kpi.get("x_help", "")))}</td>
                             <td>{escape(str(kpi.get("y_unit", kpi["unit"])))} - {escape(str(kpi.get("y_help", "")))}</td>
                             <td class="kpi-help">{escape(str(kpi.get("help", "No description")))}</td>

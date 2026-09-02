@@ -141,9 +141,16 @@ def _handle_caliper_output_and_completion_with_header(
 
     # Read and parse status file
     try:
-        with open(status_file, encoding="utf-8") as f:
-            status_data = yaml.safe_load(f)
-        # Handle case where YAML file is empty or invalid
+        if status_file.exists():
+            with open(status_file, encoding="utf-8") as f:
+                status_data = yaml.safe_load(f)
+            # Handle case where YAML file is empty or invalid
+        else:
+            status_data = {
+                "success": False,
+                "error": "Status file not generated",
+            }
+
         if status_data is None:
             status_data = {
                 "success": False,

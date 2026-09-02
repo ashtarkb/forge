@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from projects.caliper.engine.kpi import (
+    Curve,
     Format,
     HigherBetter,
     KPIMetadata,
     LowerBetter,
-    TwoDimensional,
 )
 
 
@@ -23,15 +23,8 @@ def guidellm_output_tokens_per_request(unified_record) -> float:
     return float(value)
 
 
-# Note: Scalar "best" KPIs removed - only 2D curve KPIs are desired
-
-
-# Note: Total request count KPIs removed - only 2D curve KPIs are desired
-
-
-# 2D KPIs that extract data from performance curves
 @HigherBetter()
-@TwoDimensional(
+@Curve(
     x_unit="connections",
     x_help="Input concurrency",
     y_unit="tokens/s",
@@ -61,7 +54,7 @@ def guidellm_throughput_curve(unified_record) -> list[tuple[int, float]]:
 
 
 @LowerBetter()
-@TwoDimensional(
+@Curve(
     x_unit="connections",
     x_help="Input concurrency",
     y_unit="s",
@@ -87,7 +80,7 @@ def guidellm_latency(unified_record) -> list[tuple[int, float]]:
 
 
 @LowerBetter()
-@TwoDimensional(
+@Curve(
     x_unit="connections",
     x_help="Input concurrency",
     y_unit="s",
@@ -113,7 +106,7 @@ def guidellm_ttft(unified_record) -> list[tuple[int, float]]:
 
 
 @LowerBetter()
-@TwoDimensional(
+@Curve(
     x_unit="connections",
     x_help="Input concurrency",
     y_unit="s",
@@ -139,7 +132,7 @@ def guidellm_tpot(unified_record) -> list[tuple[int, float]]:
 
 
 @LowerBetter()
-@TwoDimensional(
+@Curve(
     x_unit="connections",
     x_help="Input concurrency",
     y_unit="s",
@@ -165,7 +158,7 @@ def guidellm_tpot_p95(unified_record) -> list[tuple[int, float]]:
 
 
 @LowerBetter()
-@TwoDimensional(
+@Curve(
     x_unit="connections",
     x_help="Input concurrency",
     y_unit="s",

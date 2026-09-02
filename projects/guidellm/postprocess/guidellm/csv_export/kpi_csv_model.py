@@ -68,11 +68,11 @@ class KPICsvRow:
     test_base_path: str = ""
     plugin_module: str = ""
 
-    # 2D KPI specific fields (for curve/dimensional data)
-    is_2d: bool = False
+    # curve KPI specific fields (for curve/dimensional data)
+    is_curve: bool = False
     point_index: int | str = ""  # Index of this point in 2D series
     x_value: float | str = ""  # X coordinate value
-    y_value: float | str = ""  # Y coordinate value (same as value for 2D KPIs)
+    y_value: float | str = ""  # Y coordinate value (same as value for curve KPIs)
     x_unit: str = ""  # Unit for X axis
     y_unit: str = ""  # Unit for Y axis
 
@@ -120,8 +120,8 @@ class KPICsvSchema:
             # Source tracking
             "test_base_path",
             "plugin_module",
-            # 2D KPI fields (for curve/dimensional data)
-            "is_2d",
+            # curve KPI fields (for curve/dimensional data)
+            "is_curve",
             "point_index",
             "x_value",
             "y_value",
@@ -169,11 +169,11 @@ class KPICsvSchema:
             # Source tracking
             "test_base_path": "File path where test artifacts are stored",
             "plugin_module": "Caliper plugin that processed this test",
-            # 2D KPI fields
-            "is_2d": "Whether this is a 2D KPI data point (true/false)",
+            # curve KPI fields
+            "is_curve": "Whether this is a curve KPI data point (true/false)",
             "point_index": "Index of this point in 2D series (0, 1, 2, ...)",
-            "x_value": "X coordinate value for 2D KPIs",
-            "y_value": "Y coordinate value for 2D KPIs (same as value)",
+            "x_value": "X coordinate value for curve KPIs",
+            "y_value": "Y coordinate value for curve KPIs (same as value)",
             "x_unit": "Unit of measurement for X axis",
             "y_unit": "Unit of measurement for Y axis",
         }
@@ -192,8 +192,8 @@ class KPICsvSchema:
             "timestamp": str,
             "schema_version": str,
             # All other fields are strings (labels, metadata, etc.)
-            # 2D KPI field types
-            "is_2d": bool,
+            # curve KPI field types
+            "is_curve": bool,
             "point_index": int,
             "x_value": float,
             "y_value": float,
@@ -214,7 +214,7 @@ class KPICsvSchema:
             value = row_dict.get(col, "")
 
             # Handle special type conversions
-            if col in ["higher_is_better", "is_2d"] and isinstance(value, bool):
+            if col in ["higher_is_better", "is_curve"] and isinstance(value, bool):
                 cleaned[col] = str(value).lower()  # Convert bool to string
             elif col in ["value", "x_value", "y_value"]:
                 # Keep numeric values as-is, convert others to string
@@ -258,7 +258,7 @@ def create_csv_rows_from_kpi_record(kpi_record: dict[str, Any]) -> list[KPICsvRo
     Convert a KPI record (from compute_kpis) to CSV row model(s).
 
     For scalar KPIs, returns a single row.
-    For 2D KPIs, returns multiple rows (one per data point).
+    For curve KPIs, returns multiple rows (one per data point).
 
     Args:
         kpi_record: KPI record dictionary from GuideLLMKpiHandler.compute_kpis()
@@ -266,13 +266,13 @@ def create_csv_rows_from_kpi_record(kpi_record: dict[str, Any]) -> list[KPICsvRo
     Returns:
         List of KPICsvRow instances
     """
-    is_2d = kpi_record.get("is_2d", False)
+    is_curve = kpi_record.get("is_curve", False)
 
-    if not is_2d:
+    if not is_curve:
         # Scalar KPI - single row
         return [create_csv_row_from_kpi_record(kpi_record)]
 
-    # 2D KPI - expand into multiple rows
+    # curve KPI - expand into multiple rows
     value = kpi_record.get("value", [])
     if not isinstance(value, list) or not value:
         # Invalid 2D data - treat as scalar with empty value
@@ -291,7 +291,7 @@ def create_csv_rows_from_kpi_record(kpi_record: dict[str, Any]) -> list[KPICsvRo
         # Create a modified record for this specific point
         point_record = kpi_record.copy()
         point_record["value"] = y_val  # Y value becomes the main value
-        point_record["is_2d"] = True
+        point_record["is_curve"] = True
         point_record["point_index"] = idx
         point_record["x_value"] = x_val
         point_record["y_value"] = y_val
@@ -332,8 +332,8 @@ def create_csv_row_from_kpi_record(kpi_record: dict[str, Any]) -> KPICsvRow:
         kpi_help=kpi_record.get("help", ""),
         higher_is_better=labels.get("higher_is_better", False),
         value=kpi_record.get("value"),
-        # 2D KPI info
-        is_2d=kpi_record.get("is_2d", False),
+        # curve KPI info
+        is_curve=kpi_record.get("is_curve", False),
         point_index=kpi_record.get("point_index", ""),
         x_value=kpi_record.get("x_value", ""),
         y_value=kpi_record.get("y_value", ""),

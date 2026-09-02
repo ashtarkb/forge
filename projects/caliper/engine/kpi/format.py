@@ -70,10 +70,10 @@ def transform_kpis_to_hierarchical_format(kpis: list[dict], model) -> dict:
             }
 
         raw_value = kpi.get("value")
-        is_2d = kpi_model["is_2d"]
+        is_curve = kpi_model["is_curve"]
 
-        # Apply tuple-pair structural transform only for confirmed 2D KPIs
-        if is_2d:
+        # Apply tuple-pair structural transform only for confirmed curve KPIs
+        if is_curve:
             final_value = {
                 "data_points": [{"x": float(x), "y": float(y)} for x, y in raw_value],
                 "count": len(raw_value),

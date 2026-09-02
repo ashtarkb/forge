@@ -463,8 +463,8 @@ def _load_json_file(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _log_2d_metrics(metrics_2d: dict[str, Any]) -> None:
-    """Log 2D metrics as stepped MLflow metrics.
+def _log_curve_metrics(metrics_curve: dict[str, Any]) -> None:
+    """Log curve metrics as stepped MLflow metrics.
 
     Each key maps to a list of ``{"x": ..., "y": ...}`` dicts (already
     sorted by x in ``metrics_from_kpis``).  Each data point is logged
@@ -476,7 +476,7 @@ def _log_2d_metrics(metrics_2d: dict[str, Any]) -> None:
     """
     import mlflow
 
-    for metric_name, data_points in metrics_2d.items():
+    for metric_name, data_points in metrics_curve.items():
         if not isinstance(data_points, list):
             continue
         for i, pt in enumerate(data_points):
@@ -518,7 +518,7 @@ def _log_metrics_and_params_from_tree(artifact_root: Path) -> None:
         if mf.is_file():
             for k, v in _load_json_file(mf).items():
                 if isinstance(v, list):
-                    _log_2d_metrics({k: v})
+                    _log_curve_metrics({k: v})
                 elif isinstance(v, int | float) and not isinstance(v, bool):
                     mlflow.log_metric(str(k), float(v))
 
@@ -645,7 +645,7 @@ def log_multi_run_artifacts(
                     if mf.is_file():
                         for k, v in _load_json_file(mf).items():
                             if isinstance(v, list):
-                                _log_2d_metrics({k: v})
+                                _log_curve_metrics({k: v})
                             elif isinstance(v, int | float) and not isinstance(v, bool):
                                 mlflow.log_metric(str(k), float(v))
 

@@ -108,21 +108,21 @@ class StubPlugin(PostProcessingPlugin):
                 "name": "generic",
                 "unit": "count",
                 "higher_is_better": True,
-                "is_2d": False,
+                "is_curve": False,
             },
             {
                 "kpi_id": "dashboard",
                 "name": "dashboard",
                 "unit": "score",
                 "higher_is_better": True,
-                "is_2d": False,
+                "is_curve": False,
             },
             {
                 "kpi_id": "throughput_rps",
                 "name": "throughput_rps",
                 "unit": "req/s",
                 "higher_is_better": True,
-                "is_2d": False,
+                "is_curve": False,
             },
         ]
 

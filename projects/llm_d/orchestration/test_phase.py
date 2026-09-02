@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import shutil
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -161,10 +162,15 @@ def extract_kpi_labels_from_config() -> dict[str, str]:
     return kpi_labels
 
 
+def get_iso_timestamp() -> str:
+    """Get current timestamp in ISO format with Z timezone."""
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
 def create_test_labels(
     mlflow_destination: dict[str, str] | None = None,
 ) -> None:
-    """Create __test_labels__.yaml with model name and guidellm configuration."""
+    """Create __test_labels__.yaml with model name, guidellm configuration, and test start time."""
 
     model_name = runtime_config.get_model_name()
     deployment_profile = runtime_config.get_deployment_profile_name()
@@ -181,13 +187,17 @@ def create_test_labels(
     # Extract kpi_labels from config
     kpi_labels = extract_kpi_labels_from_config()
 
+    # Create initial timing structure with test start
+    timing = {"test": {"start": get_iso_timestamp()}}
+
     write_test_labels(
         env.ARTIFACT_DIR,
         labels,
         kpi_labels=kpi_labels if kpi_labels else None,
         mlflow_destination=mlflow_destination,
+        timing=timing,
     )
-    logger.info("Created test labels: %s", labels)
+    logger.info("Created test labels with start time: %s", labels)
 
     # Dump config.project to config.yaml
     config_path = env.ARTIFACT_DIR / "config.yaml"
@@ -211,8 +221,49 @@ def create_test_labels(
         logger.debug("No fournos job file found at: %s", fournos_source)
 
 
+def update_test_labels_with_timing(
+    timing_section: str, timing_event: str, timestamp: str | None = None
+) -> None:
+    """Update __test_labels__.yaml with timing information.
+
+    Args:
+        timing_section: Section name (e.g., 'benchmark', 'test')
+        timing_event: Event name (e.g., 'start', 'end')
+        timestamp: Optional ISO timestamp. If None, uses current time.
+    """
+    if timestamp is None:
+        timestamp = get_iso_timestamp()
+
+    test_labels_path = env.ARTIFACT_DIR / "__test_labels__.yaml"
+
+    # Read existing labels
+    if test_labels_path.exists():
+        with test_labels_path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    else:
+        data = {"version": "1", "labels": {}}
+
+    # Ensure timing section exists
+    if "timing" not in data:
+        data["timing"] = {}
+
+    if timing_section not in data["timing"]:
+        data["timing"][timing_section] = {}
+
+    # Add the timing event
+    data["timing"][timing_section][timing_event] = timestamp
+
+    # Write updated labels
+    with test_labels_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
+
+    logger.info(
+        "Updated test labels with timing: %s.%s = %s", timing_section, timing_event, timestamp
+    )
+
+
 def update_test_labels_with_status(success: bool, message: str) -> None:
-    """Update __test_labels__.yaml with test execution status.
+    """Update __test_labels__.yaml with test execution status and end time.
 
     Args:
         success: True if test succeeded, False if failed
@@ -234,12 +285,23 @@ def update_test_labels_with_status(success: bool, message: str) -> None:
         "message": message,
     }
 
+    # Add test end timing
+    test_end_time = get_iso_timestamp()
+    if "timing" not in data:
+        data["timing"] = {}
+    if "test" not in data["timing"]:
+        data["timing"]["test"] = {}
+
+    data["timing"]["test"]["end"] = test_end_time
+
     # Write updated labels
     with test_labels_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, sort_keys=False)
 
     logger.info(
-        "Updated test labels with completion status: success=%s, message=%s", success, message
+        "Updated test labels with completion status and end time: success=%s, message=%s",
+        success,
+        message,
     )
 
     if not success:
@@ -717,22 +779,29 @@ def run_guidellm_benchmark(*, endpoint_url: str) -> None:
     if benchmark is None:
         return
 
-    benchmark_key = runtime_config.get_benchmark_keys()[0]
-    guidellm_args = build_guidellm_args(benchmark)
-    if not any(arg.startswith("--processor=") for arg in guidellm_args):
-        guidellm_args.append(f"--processor={runtime_config.get_model_name()}")
-    artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
-    with env.NextArtifactDir(artifact_name):
-        run_guidellm_benchmark_command.run(
-            endpoint_url=endpoint_url,
-            name=benchmark.get("job_name"),
-            namespace=namespace,
-            image=benchmark.get("image"),
-            timeout=benchmark.get("timeout_seconds"),
-            pvc_size=benchmark.get("pvc_size"),
-            pvc_storage_class=benchmark.get("pvc_storage_class"),
-            guidellm_args=guidellm_args,
-        )
+    # Add benchmark start timing
+    update_test_labels_with_timing("benchmark", "start")
+
+    try:
+        benchmark_key = runtime_config.get_benchmark_keys()[0]
+        guidellm_args = build_guidellm_args(benchmark)
+        if not any(arg.startswith("--processor=") for arg in guidellm_args):
+            guidellm_args.append(f"--processor={runtime_config.get_model_name()}")
+        artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
+        with env.NextArtifactDir(artifact_name):
+            run_guidellm_benchmark_command.run(
+                endpoint_url=endpoint_url,
+                name=benchmark.get("job_name"),
+                namespace=namespace,
+                image=benchmark.get("image"),
+                timeout=benchmark.get("timeout_seconds"),
+                pvc_size=benchmark.get("pvc_size"),
+                pvc_storage_class=benchmark.get("pvc_storage_class"),
+                guidellm_args=guidellm_args,
+            )
+    finally:
+        # Add benchmark end timing (even if benchmark failed)
+        update_test_labels_with_timing("benchmark", "end")
 
 
 def capture_inference_service_state(llmisvc_name: str) -> None:

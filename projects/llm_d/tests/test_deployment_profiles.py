@@ -18,6 +18,11 @@ REFERENCE_DIR = Path(__file__).resolve().parent / "reference_deployments"
 DEPLOYMENT_PRESETS = [
     "cpt-reference-flavors",
 ]
+CONFIG_OVERRIDES = {
+    "runtime.kserve.dry_run": True,
+    "caliper.postprocess.enabled": False,
+    "agentic.enabled": False,
+}
 
 # Check for save deployments mode via environment variable
 SAVE_DEPLOYMENTS = os.environ.get("SAVE_DEPLOYMENTS", "false").lower() in ("true", "1", "yes")
@@ -51,10 +56,7 @@ def _test_preset_generates_expected_llmisvc(preset: str, tmp_path: Path):
     variable_overrides_path.parent.mkdir(parents=True, exist_ok=True)
     variable_overrides_path.write_text(
         yaml.safe_dump(
-            {
-                "runtime.kserve.dry_run": True,
-                "caliper.postprocess.enabled": False,
-            },
+            CONFIG_OVERRIDES,
             sort_keys=True,
         ),
         encoding="utf-8",

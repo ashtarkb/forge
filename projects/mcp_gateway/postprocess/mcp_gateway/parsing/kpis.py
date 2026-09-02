@@ -9,12 +9,15 @@ from typing import Any
 from projects.caliper.engine.kpi import (
     Format,
     HigherBetter,
+    KpiCatalogEntry,
     KPIMetadata,
+    KpiRecord,
     LowerBetter,
+    SourceInfo,
     build_catalog_from_functions,
     create_label_extractor,
     get_kpi_functions,
-    is_2d_kpi,
+    is_curve_kpi,
 )
 from projects.caliper.engine.model import UnifiedRunModel
 
@@ -252,9 +255,28 @@ class MCPGatewayKpiHandler:
 
     @staticmethod
     def get_catalog() -> list[dict[str, Any]]:
-        """Return the KPI catalog built from decorated functions."""
+        """Return the KPI catalog built from decorated functions using dataclasses."""
         current_module = inspect.getmodule(MCPGatewayKpiHandler)
-        return build_catalog_from_functions(current_module)
+        raw_catalog = build_catalog_from_functions(current_module)
+
+        # Convert to structured dataclass format
+        catalog_entries = []
+        for entry in raw_catalog:
+            catalog_entry = KpiCatalogEntry(
+                kpi_id=entry.get("kpi_id", ""),
+                name=entry.get("name", ""),
+                unit=entry.get("unit", ""),
+                higher_is_better=entry.get("higher_is_better", True),
+                is_curve=entry.get("is_curve", False),
+                help=entry.get("help", ""),
+                x_unit=entry.get("x_unit", ""),
+                x_help=entry.get("x_help", ""),
+                y_unit=entry.get("y_unit", ""),
+                y_help=entry.get("y_help", ""),
+            )
+            catalog_entries.append(catalog_entry.to_dict())
+
+        return catalog_entries
 
     @staticmethod
     def compute_kpis(model: UnifiedRunModel) -> list[dict[str, Any]]:
@@ -278,7 +300,7 @@ class MCPGatewayKpiHandler:
             test_condition_labels = MCPGatewayKpiHandler.LABEL_EXTRACTOR.extract(r)
 
             for kpi_id, kpi_func in kpi_functions.items():
-                if is_2d_kpi(kpi_func):
+                if is_curve_kpi(kpi_func):
                     continue
 
                 try:
@@ -295,20 +317,23 @@ class MCPGatewayKpiHandler:
                     "higher_is_better": kpi_func._kpi_higher_is_better,
                 }
 
-                out.append(
-                    {
-                        "schema_version": "1",
-                        "kpi_id": kpi_id,
-                        "value": value,
-                        "unit": kpi_func._kpi_unit,
-                        "run_id": r.test_base_path,
-                        "timestamp": ts,
-                        "labels": all_labels,
-                        "source": {
-                            "test_base_path": r.test_base_path,
-                            "plugin_module": model.plugin_module,
-                        },
-                    }
+                # Create structured KPI record using core dataclass
+                kpi_record = KpiRecord(
+                    schema_version="1",
+                    kpi_id=kpi_id,
+                    value=value,  # Core enforces int|float only
+                    unit=kpi_func._kpi_unit,
+                    run_id=r.test_base_path,
+                    timestamp=ts,
+                    labels=all_labels,
+                    metadata={},
+                    is_curve=False,  # Scalar KPI
+                    source=SourceInfo(
+                        test_base_path=r.test_base_path,
+                        plugin_module=model.plugin_module,
+                    ),
                 )
+
+                out.append(kpi_record.to_dict())
 
         return out

@@ -46,8 +46,8 @@ class Format:
         return func
 
 
-class TwoDimensional:
-    """Decorator to mark KPIs as 2D (returning list of (x, y) tuples)."""
+class Curve:
+    """Decorator to mark KPIs as curve data (returning list of (x, y) tuples)."""
 
     def __init__(
         self,
@@ -66,7 +66,7 @@ class TwoDimensional:
         self.y_format = y_format
 
     def __call__(self, func: Callable) -> Callable:
-        func._kpi_is_2d = True
+        func._kpi_is_curve = True
         func._kpi_x_unit = self.x_unit
         func._kpi_x_help = self.x_help
         func._kpi_y_unit = self.y_unit
@@ -174,9 +174,9 @@ def get_kpi_functions(module) -> dict[str, Callable]:
     return kpi_functions
 
 
-def is_2d_kpi(func: Callable) -> bool:
-    """Check if a KPI function is marked as 2D."""
-    return getattr(func, "_kpi_is_2d", False)
+def is_curve_kpi(func: Callable) -> bool:
+    """Check if a KPI function is marked as curve data."""
+    return getattr(func, "_kpi_is_curve", False)
 
 
 def build_catalog_from_functions(module) -> list[dict[str, Any]]:
@@ -206,11 +206,11 @@ def build_catalog_from_functions(module) -> list[dict[str, Any]]:
             "help": func._kpi_help,
         }
 
-        # Add 2D-specific metadata if this is a 2D KPI
-        if is_2d_kpi(func):
+        # Add curve-specific metadata if this is a curve KPI
+        if is_curve_kpi(func):
             kpi_def.update(
                 {
-                    "is_2d": True,
+                    "is_curve": True,
                     "x_unit": func._kpi_x_unit,
                     "x_help": func._kpi_x_help,
                     "y_unit": getattr(func, "_kpi_y_unit", None) or func._kpi_unit,
@@ -226,7 +226,7 @@ def build_catalog_from_functions(module) -> list[dict[str, Any]]:
             elif hasattr(func, "_kpi_format"):
                 kpi_def["y_format"] = func._kpi_format
         else:
-            kpi_def["is_2d"] = False
+            kpi_def["is_curve"] = False
             # Add scalar formatting info if available
             if hasattr(func, "_kpi_format"):
                 kpi_def["format"] = func._kpi_format

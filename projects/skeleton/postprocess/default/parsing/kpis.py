@@ -9,14 +9,19 @@ from pathlib import Path
 from typing import Any
 
 from projects.caliper.engine.kpi import (
+    # KPI function decorators and utilities
     Format,
     HigherBetter,
+    # Core dataclasses from Caliper engine
+    KpiCatalogEntry,
     KPIMetadata,
+    KpiRecord,
     LowerBetter,
+    SourceInfo,
     build_catalog_from_functions,
     create_label_extractor,
     get_kpi_functions,
-    is_2d_kpi,
+    is_curve_kpi,
 )
 from projects.caliper.engine.model import UnifiedRunModel
 
@@ -104,13 +109,32 @@ class SkeletonKpiHandler:
     @staticmethod
     def get_catalog() -> list[dict[str, Any]]:
         """
-        Return the KPI catalog for skeleton metrics.
+        Return the KPI catalog for skeleton metrics using dataclasses.
 
         Returns:
-            List of KPI definitions
+            List of KPI catalog entries as dictionaries
         """
         current_module = inspect.getmodule(SkeletonKpiHandler)
-        return build_catalog_from_functions(current_module)
+        raw_catalog = build_catalog_from_functions(current_module)
+
+        # Convert to structured dataclass format
+        catalog_entries = []
+        for entry in raw_catalog:
+            catalog_entry = KpiCatalogEntry(
+                kpi_id=entry.get("kpi_id", ""),
+                name=entry.get("name", ""),
+                unit=entry.get("unit", ""),
+                higher_is_better=entry.get("higher_is_better", True),
+                is_curve=entry.get("is_curve", False),
+                help=entry.get("help", ""),
+                x_unit=entry.get("x_unit", ""),
+                x_help=entry.get("x_help", ""),
+                y_unit=entry.get("y_unit", ""),
+                y_help=entry.get("y_help", ""),
+            )
+            catalog_entries.append(catalog_entry.to_dict())
+
+        return catalog_entries
 
     @staticmethod
     def compute_kpis(model: UnifiedRunModel) -> list[dict[str, Any]]:
@@ -142,8 +166,8 @@ class SkeletonKpiHandler:
                 try:
                     value = kpi_func(r)
                 except (TypeError, ValueError, KeyError):
-                    if is_2d_kpi(kpi_func):
-                        value = []  # Empty list for failed 2D KPIs
+                    if is_curve_kpi(kpi_func):
+                        value = []  # Empty list for failed curve KPIs
                     else:
                         value = None  # None for missing/failed scalar KPIs
 
@@ -162,32 +186,30 @@ class SkeletonKpiHandler:
                     "higher_is_better": kpi_func._kpi_higher_is_better,
                 }
 
-                kpi_record = {
-                    "schema_version": "1",
-                    "kpi_id": kpi_id,
-                    "value": value,
-                    "unit": kpi_func._kpi_unit,
-                    "run_id": r.test_base_path,
-                    "timestamp": ts,
-                    "labels": all_labels,
-                    "metadata": metadata_fields,
-                    "source": {
-                        "test_base_path": r.test_base_path,
-                        "plugin_module": model.plugin_module,
-                    },
-                }
+                # Create structured KPI record using core dataclass
+                kpi_record = KpiRecord(
+                    schema_version="1",
+                    kpi_id=kpi_id,
+                    value=value,  # Core enforces int|float only
+                    unit=kpi_func._kpi_unit,
+                    run_id=r.test_base_path,
+                    timestamp=ts,
+                    labels=all_labels,
+                    metadata=metadata_fields,
+                    is_curve=False,  # Scalar KPI
+                    source=SourceInfo(
+                        test_base_path=r.test_base_path,
+                        plugin_module=model.plugin_module,
+                    ),
+                )
 
-                # Add 2D-specific metadata
-                if is_2d_kpi(kpi_func):
-                    kpi_record.update(
-                        {
-                            "x_unit": kpi_func._kpi_x_unit,
-                            "x_help": kpi_func._kpi_x_help,
-                            "y_unit": getattr(kpi_func, "_kpi_y_unit", None) or kpi_func._kpi_unit,
-                            "y_help": getattr(kpi_func, "_kpi_y_help", None) or kpi_func._kpi_help,
-                        }
-                    )
+                # Add 2D-specific metadata if applicable
+                if is_curve_kpi(kpi_func):
+                    kpi_record.x_unit = kpi_func._kpi_x_unit
+                    kpi_record.x_help = kpi_func._kpi_x_help
+                    kpi_record.y_unit = getattr(kpi_func, "_kpi_y_unit", None) or kpi_func._kpi_unit
+                    kpi_record.y_help = getattr(kpi_func, "_kpi_y_help", None) or kpi_func._kpi_help
 
-                out.append(kpi_record)
+                out.append(kpi_record.to_dict())
 
         return out

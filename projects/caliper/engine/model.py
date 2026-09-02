@@ -198,6 +198,6 @@ class PostProcessingPlugin(ABC):
             - name: str - Display name
             - unit: str - Measurement unit
             - higher_is_better: bool - Whether higher values are better
-            - is_2d: bool - Whether this is a 2D metric
+            - is_curve: bool - Whether this is a curve metric
         """
         return []

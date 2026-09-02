@@ -11,6 +11,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from projects.caliper.engine.kpi import (
+    KpiCatalogEntry,
+    KpiRecord,
+    SourceInfo,
+)
 from projects.caliper.engine.model import (
     ParseResult,
     TestBaseNode,
@@ -375,36 +380,41 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[dict[
                 kpi_labels = dict(labels)
                 if higher_is_better is not None:
                     kpi_labels["higher_is_better"] = higher_is_better
-                output.append(
-                    {
-                        "schema_version": "1",
-                        "kpi_id": f"{prefix}_{suffix}",
-                        "value": float(values[index]),
-                        "unit": unit,
-                        "run_id": record.test_base_path,
-                        "run_path": record.test_base_path,
-                        "timestamp": timestamp,
-                        "labels": kpi_labels,
-                        "source": {
-                            "test_base_path": record.test_base_path,
-                            "plugin_module": model.plugin_module,
-                        },
-                    }
+
+                # Create structured KPI record using core dataclass
+                kpi_record = KpiRecord(
+                    schema_version="1",
+                    kpi_id=f"{prefix}_{suffix}",
+                    value=float(values[index]),
+                    unit=unit,
+                    run_id=record.test_base_path,
+                    timestamp=timestamp,
+                    labels=kpi_labels,
+                    metadata={"run_path": record.test_base_path},  # Move run_path to metadata
+                    is_curve=False,  # Scalar KPI
+                    source=SourceInfo(
+                        test_base_path=record.test_base_path,
+                        plugin_module=model.plugin_module,
+                    ),
                 )
+                output.append(kpi_record.to_dict())
     return output
 
 
 def dashboard_kpi_catalog(*, prefix: str) -> list[dict[str, Any]]:
-    """Return catalog entries for the shared dashboard KPI set."""
-    return [
-        {
-            "kpi_id": f"{prefix}_{suffix}",
-            "name": f"{prefix}_{suffix}",
-            "unit": unit,
-            "higher_is_better": higher_is_better,
-        }
-        for suffix, _, _, unit, higher_is_better in DASHBOARD_METRICS
-    ]
+    """Return catalog entries for the shared dashboard KPI set using dataclasses."""
+    catalog_entries = []
+    for suffix, _, _, unit, higher_is_better in DASHBOARD_METRICS:
+        catalog_entry = KpiCatalogEntry(
+            kpi_id=f"{prefix}_{suffix}",
+            name=f"{prefix}_{suffix}",
+            unit=unit,
+            higher_is_better=higher_is_better if higher_is_better is not None else True,
+            is_curve=False,
+            help=f"Dashboard metric: {suffix}",
+        )
+        catalog_entries.append(catalog_entry.to_dict())
+    return catalog_entries
 
 
 def export_dashboard_kpis_to_csv(
@@ -422,7 +432,8 @@ def export_dashboard_kpis_to_csv(
     labels_by_group: dict[tuple[str, str], dict[str, Any]] = {}
     for kpi in kpi_records:
         labels = kpi.get("labels", {})
-        key = (str(kpi.get("run_path", "")), str(labels.get("rate_index", "0")))
+        metadata = kpi.get("metadata", {})
+        key = (str(metadata.get("run_path", "")), str(labels.get("rate_index", "0")))
         column = kpi_to_column.get(kpi.get("kpi_id", ""))
         if column:
             groups.setdefault(key, {})[column] = kpi.get("value")

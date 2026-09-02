@@ -20,15 +20,15 @@ logger = logging.getLogger(__name__)
 class KPICsvExporter:
     """Export KPI data to CSV format."""
 
-    def __init__(self, include_2d_kpis: bool = True):
+    def __init__(self, include_curve_kpis: bool = True):
         """
         Initialize the CSV exporter.
 
         Args:
-            include_2d_kpis: Whether to include 2D KPIs in export (expanded as multiple rows)
+            include_curve_kpis: Whether to include curve KPIs in export (expanded as multiple rows)
         """
         self.schema = KPICsvSchema()
-        self.include_2d_kpis = include_2d_kpis
+        self.include_curve_kpis = include_curve_kpis
 
     def export_kpis_to_csv(
         self,
@@ -50,18 +50,18 @@ class KPICsvExporter:
         # Ensure output directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Convert KPI records to CSV rows (handling 2D KPI expansion)
+        # Convert KPI records to CSV rows (handling curve KPI expansion)
         csv_rows = []
-        skipped_2d_count = 0
+        skipped_curve_count = 0
 
         for record in kpi_records:
             try:
-                if record.get("is_2d", False) and not self.include_2d_kpis:
-                    # Skip 2D KPIs if not including them
-                    skipped_2d_count += 1
+                if record.get("is_curve", False) and not self.include_curve_kpis:
+                    # Skip curve KPIs if not including them
+                    skipped_curve_count += 1
                     continue
 
-                # Use new function that handles both scalar and 2D KPIs
+                # Use new function that handles both scalar and curve KPIs
                 rows = create_csv_rows_from_kpi_record(record)
                 csv_rows.extend(rows)
             except Exception as e:
@@ -94,13 +94,13 @@ class KPICsvExporter:
         # Summary info
         total_written = len(csv_rows)
         logger.info(f"Exported {total_written} KPI records to {output_path}")
-        if skipped_2d_count > 0:
-            logger.info(f"Skipped {skipped_2d_count} 2D KPIs (include_2d_kpis=False)")
+        if skipped_curve_count > 0:
+            logger.info(f"Skipped {skipped_curve_count} curve KPIs (include_curve_kpis=False)")
 
-        # Count 2D KPI expansion
-        total_2d_rows = sum(1 for row in csv_rows if getattr(row, "is_2d", False))
-        if total_2d_rows > 0:
-            logger.info(f"Expanded 2D KPIs into {total_2d_rows} individual data point rows")
+        # Count curve KPI expansion
+        total_curve_rows = sum(1 for row in csv_rows if getattr(row, "is_curve", False))
+        if total_curve_rows > 0:
+            logger.info(f"Expanded curve KPIs into {total_curve_rows} individual data point rows")
 
         return str(output_path)
 
@@ -137,7 +137,7 @@ class KPICsvExporter:
             "column_names": self.schema.columns,
             "column_descriptions": self.schema.column_descriptions,
             "schema_version": "1",
-            "supports_2d_kpis": self.include_2d_kpis,
+            "supports_curve_kpis": self.include_curve_kpis,
         }
 
     def export_records_from_list(

@@ -3,7 +3,7 @@ Notification formatting for Caliper postprocess status.
 
 Provides formatting functions for converting typed postprocess status
 into GitHub notification text. Now uses the typed dataclass models
-from the public API.
+from the public API with object-oriented step formatting.
 """
 
 from __future__ import annotations
@@ -77,154 +77,200 @@ def format_postprocess_status_notification(
             if reason:
                 lines.append(f"  * `{reason}`")
 
-            # Add specific file links for certain steps
-            if get_file_link:
-                output_file = step_data.get("output_file")
-                if step_name == "artifacts_to_kpis" and output_file:
-                    lines.append(_create_file_link(output_file, "📄", get_file_link))
-
-                elif step_name == "kpis_to_csv" and output_file:
-                    lines.append(_create_file_link(output_file, "📊", get_file_link))
-
-                elif step_name == "artifacts_to_ai_data":
-                    ai_data_dir = step_data.get("ai_data_dir")
-                    if ai_data_dir:
-                        try:
-                            dir_url = get_file_link("")  # Get base directory URL
-                            # Extract relative path from the full path
-                            ai_data_dir_relative = ai_data_dir.split("/")[-1]  # Get just "ai_eval"
-                            dir_url = get_file_link(ai_data_dir_relative)
-                            lines.append(f"  - 📁 [AI Eval Directory]({dir_url})")
-                        except Exception:
-                            lines.append(f"  - 📁 AI Eval Directory: {ai_data_dir}")
-
-                    if output_file:
-                        try:
-                            # Extract relative path for output file
-                            import os
-
-                            output_file_relative = os.path.relpath(
-                                output_file,
-                                ai_data_dir or "",
-                            )
-                            if ai_data_dir and "ai_eval" in ai_data_dir:
-                                output_file_relative = f"ai_eval/{output_file_relative}"
-                            file_url = get_file_link(output_file_relative)
-                            filename = output_file.split("/")[-1]
-                            lines.append(f"  - 📄 [{filename}]({file_url})")
-                        except Exception:
-                            filename = output_file.split("/")[-1]
-                            lines.append(f"  - 📄 {filename}")
-
-                elif step_name == "s3_export":
-                    # Show exported path
-                    exported_path = step_data.get("exported_path")
-                    if exported_path:
-                        lines.append(f"  - 📤 Exported to: `{exported_path}`")
-
-                    # Show uploaded files count
-                    uploaded_files = step_data.get("uploaded_files")
-                    if uploaded_files is not None:
-                        lines.append(f"  - ✅ Uploaded files: {uploaded_files}")
-
-                    # Show failed files count if > 0
-                    failed_files = step_data.get("failed_files")
-                    if failed_files and failed_files > 0:
-                        lines.append(f"  - ❌ Failed files: {failed_files}")
-
-                elif step_name == "s3_import":
-                    # Show downloaded files count
-                    downloaded_files = step_data.get("downloaded_files")
-                    if downloaded_files is not None:
-                        lines.append(f"  - ⬇️ Downloaded files: {downloaded_files}")
-
-                    # Show failed files count if > 0
-                    failed_files = step_data.get("failed_files")
-                    if failed_files and failed_files > 0:
-                        lines.append(f"  - ❌ Failed files: {failed_files}")
-
-                elif step_name == "analyse_kpis":
-                    # Show analysis output file
-                    if output_file:
-                        lines.append(_create_file_link(output_file, "📊", get_file_link))
-
-                    # Show baseline files count if available
-                    baseline_files_count = step_data.get("baseline_files_count")
-                    if baseline_files_count is not None:
-                        lines.append(f"  - 📈 Baseline files analyzed: {baseline_files_count}")
-
-            # Add general file links if available (for visualize step, etc.)
-            file_paths = step_data.get("output_files") or step_data.get("paths")
-            if file_paths and get_file_link:
-                lines.extend(
-                    _format_step_file_links(step_name, file_paths, get_file_link, step_data)
-                )
+            # Use object-oriented step formatter to handle step-specific details
+            step_details = _format_step_details_with_formatters(step_name, step_data, get_file_link)
+            lines.extend(step_details)
 
     return "\n".join(lines) if lines else ""
 
 
-def _create_file_link(output_file: str, emoji: str, get_file_link: callable) -> str:
-    """Create a file link line for notifications.
+def _format_step_details_with_formatters(
+    step_name: str, step_data: dict, get_file_link: callable | None
+) -> list[str]:
+    """Format step-specific details using object-oriented formatters."""
+    if step_name == "artifacts_to_kpis":
+        return _format_artifacts_to_kpis_step(step_data, get_file_link)
+    elif step_name == "kpis_to_csv":
+        return _format_kpis_to_csv_step(step_data, get_file_link)
+    elif step_name == "artifacts_to_ai_data":
+        return _format_artifacts_to_ai_data_step(step_data, get_file_link)
+    elif step_name == "s3_export":
+        return _format_s3_export_step(step_data, get_file_link)
+    elif step_name == "s3_import":
+        return _format_s3_import_step(step_data, get_file_link)
+    elif step_name == "analyse_kpis":
+        return _format_analyse_kpis_step(step_data, get_file_link)
+    else:
+        return _format_generic_file_step(step_data, get_file_link)
 
-    Args:
-        output_file: Path to the output file
-        emoji: Emoji to use for the file type
-        get_file_link: Function to generate file URLs
 
-    Returns:
-        Formatted line with file link or plain filename
-    """
+def _create_file_link(file_path: str, emoji: str, get_file_link: callable | None) -> str:
+    """Create a file link line for notifications."""
+    if not get_file_link:
+        filename = file_path.split("/")[-1]
+        return f"  - {emoji} {filename}"
+
     try:
         from pathlib import Path
 
-        output_path = Path(output_file)
+        output_path = Path(file_path)
         filename = output_path.name
-
-        # In the standardized format, output_file is already relative to base_directory
-        file_url = get_file_link(output_file)
+        file_url = get_file_link(file_path)
         return f"  - {emoji} [{filename}]({file_url})"
     except Exception:
-        filename = output_file.split("/")[-1]
+        filename = file_path.split("/")[-1]
         return f"  - {emoji} {filename}"
 
 
-def _get_step_emoji(status: str) -> str:
-    """Get emoji for step status."""
-    if status == StepStatus.SUCCESS:
-        return "✅"
-    elif status in (StepStatus.FAILED, "failure"):  # Keep "failure" for backward compatibility
-        return "❌"
-    elif status in ("skipped", StepStatus.DISABLED):  # Keep "skipped" for backward compatibility
-        return "⏭️"
-    elif status == StepStatus.WARNING:
-        return "⚠️"
-    elif status == StepStatus.REGRESSION_DETECTED:
-        return "🚨"
+def _format_artifacts_to_kpis_step(step_data: dict, get_file_link: callable | None) -> list[str]:
+    """Format artifacts_to_kpis step details."""
+    lines = []
+    output_file = step_data.get("output_file")
+    if output_file:
+        lines.append(_create_file_link(output_file, "📄", get_file_link))
+    return lines
+
+
+def _format_kpis_to_csv_step(step_data: dict, get_file_link: callable | None) -> list[str]:
+    """Format kpis_to_csv step details."""
+    lines = []
+    output_file = step_data.get("output_file")
+    if output_file:
+        lines.append(_create_file_link(output_file, "📊", get_file_link))
+    return lines
+
+
+def _format_artifacts_to_ai_data_step(step_data: dict, get_file_link: callable | None) -> list[str]:
+    """Format artifacts_to_ai_data step details."""
+    lines = []
+
+    if not get_file_link:
+        return lines
+
+    # AI data directory link
+    ai_data_dir = step_data.get("ai_data_dir")
+    if ai_data_dir:
+        try:
+            # Extract relative path from the full path
+            ai_data_dir_relative = ai_data_dir.split("/")[-1]  # Get just "ai_eval"
+            dir_url = get_file_link(ai_data_dir_relative)
+            lines.append(f"  - 📁 [AI Eval Directory]({dir_url})")
+        except Exception:
+            lines.append(f"  - 📁 AI Eval Directory: {ai_data_dir}")
+
+    # Output file link
+    output_file = step_data.get("output_file")
+    if output_file:
+        try:
+            import os
+
+            output_file_relative = os.path.relpath(
+                output_file,
+                ai_data_dir or "",
+            )
+            if ai_data_dir and "ai_eval" in ai_data_dir:
+                output_file_relative = f"ai_eval/{output_file_relative}"
+            file_url = get_file_link(output_file_relative)
+            filename = output_file.split("/")[-1]
+            lines.append(f"  - 📄 [{filename}]({file_url})")
+        except Exception:
+            filename = output_file.split("/")[-1]
+            lines.append(f"  - 📄 {filename}")
+
+    return lines
+
+
+def _format_s3_export_step(step_data: dict, get_file_link: callable | None) -> list[str]:
+    """Format s3_export step details."""
+    lines = []
+
+    # Show exported path
+    exported_path = step_data.get("exported_path")
+    if exported_path:
+        lines.append(f"  - 📤 Exported to: `{exported_path}`")
+
+    # Show uploaded files count
+    uploaded_files = step_data.get("uploaded_files")
+    if uploaded_files is not None:
+        lines.append(f"  - ✅ Uploaded files: {uploaded_files}")
+
+    # Show failed files count if > 0
+    failed_files = step_data.get("failed_files")
+    if failed_files and failed_files > 0:
+        lines.append(f"  - ❌ Failed files: {failed_files}")
+
+    return lines
+
+
+def _format_s3_import_step(step_data: dict, get_file_link: callable | None) -> list[str]:
+    """Format s3_import step details."""
+    lines = []
+
+    # Show downloaded files count
+    downloaded_files = step_data.get("downloaded_files")
+    if downloaded_files is not None:
+        lines.append(f"  - ⬇️ Downloaded files: {downloaded_files}")
+
+    # Show failed files count if > 0
+    failed_files = step_data.get("failed_files")
+    if failed_files and failed_files > 0:
+        lines.append(f"  - ❌ Failed files: {failed_files}")
+
+    return lines
+
+
+def _format_analyse_kpis_step(step_data: dict, get_file_link: callable | None) -> list[str]:
+    """Format analyse_kpis step details."""
+    lines = []
+
+    # Show analysis output file
+    output_file = step_data.get("output_file")
+    if output_file:
+        lines.append(_create_file_link(output_file, "📊", get_file_link))
+
+    # Show regression analysis results
+    if step_data.get("regressions_detected"):
+        lines.append("  - ❌ Regression detected")
+        lines.append(
+            f"  - {step_data.get('regression_count')} regressions out of {step_data.get('total_kpis')} KPIs"
+        )
     else:
-        return "⚠️"
+        lines.append(f"  - No regression in {step_data.get('total_kpis')} KPIs")
+
+    # Show baseline files count if available
+    baseline_files_count = step_data.get("baseline_files_count")
+    if baseline_files_count is not None:
+        lines.append(f"  - 📈 Baseline files analyzed: {baseline_files_count}")
+
+    return lines
+
+
+def _format_generic_file_step(step_data: dict, get_file_link: callable | None) -> list[str]:
+    """Format generic file step details (like visualize)."""
+    lines = []
+
+    if not get_file_link:
+        return lines
+
+    # Add general file links if available (for visualize step, etc.)
+    file_paths = step_data.get("output_files") or step_data.get("paths")
+    if file_paths:
+        lines.extend(_format_step_file_links(file_paths, step_data, get_file_link))
+
+    return lines
 
 
 def _format_step_file_links(
-    step_name: str, file_paths: list[str], get_file_link: callable, step_data: dict | None = None
+    file_paths: list[str], step_data: dict, get_file_link: callable
 ) -> list[str]:
-    """Format file paths as clickable links using the provided callback.
-
-    Args:
-        step_name: Name of the step
-        file_paths: List of relative file paths
-        get_file_link: Callback function to generate URLs from file paths
-        step_data: Step data dict containing additional metadata (optional)
-
-    Returns:
-        List of formatted link strings
-    """
+    """Format file paths as clickable links using the provided callback."""
     if not file_paths:
         return []
 
     lines = []
 
     # Check if we need to combine output_dir with file paths (e.g., for visualize step)
-    output_dir = step_data.get("output_dir") if step_data else None
+    output_dir = step_data.get("output_dir")
 
     # Group files by type for better organization
     file_groups = _group_files_by_type(file_paths)
@@ -300,6 +346,22 @@ def _get_display_name(file_path: str) -> str:
         return f"{parent}/{path.name}"
 
     return path.name
+
+
+def _get_step_emoji(status: str) -> str:
+    """Get emoji for step status."""
+    if status == StepStatus.SUCCESS:
+        return "✅"
+    elif status in (StepStatus.FAILED, "failure"):  # Keep "failure" for backward compatibility
+        return "❌"
+    elif status in ("skipped", StepStatus.DISABLED):  # Keep "skipped" for backward compatibility
+        return "⏭️"
+    elif status == StepStatus.WARNING:
+        return "⚠️"
+    elif status == StepStatus.REGRESSION_DETECTED:
+        return "🚨"
+    else:
+        return "⚠️"
 
 
 def parse_postprocess_status(status_data: dict) -> PostprocessStatus | None:

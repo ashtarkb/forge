@@ -4,7 +4,7 @@ This document explains how to build and expose KPIs (Key Performance Indicators)
 
 ## Overview
 
-Caliper plugins define KPIs as decorated Python functions that extract performance metrics from test results. The KPI system supports both scalar metrics and 2D performance curves, with rich metadata for visualization and analysis.
+Caliper plugins define KPIs as decorated Python functions that extract performance metrics from test results. The KPI system supports both scalar metrics and curve performance data, with rich metadata for visualization and analysis.
 
 ## KPI Function Structure
 
@@ -28,7 +28,7 @@ def request_rate(unified_record) -> float:
 
 1. **Function name**: Becomes the KPI ID in output
 2. **Single parameter**: `unified_record` - the parsed test result
-3. **Return type**: `float` for scalar KPIs, `list[tuple[float, float]]` for 2D KPIs
+3. **Return type**: `float` for scalar KPIs, `list[tuple[float, float]]` for Curve KPIs
 4. **Docstring**: First line becomes the display name (without " KPI.")
 5. **Decorators**: Required for metadata and behavior
 
@@ -49,35 +49,33 @@ def request_rate(unified_record) -> float:
 **`@Format(format_str)`**
 - Specify number formatting (e.g., `"{:.1f}"`, `"{:.2%}"`)
 
-**`@TwoDimensional(x_unit, x_help, y_unit=None, y_help=None)`**
-- Marks KPI as returning 2D data (performance curves)
+**`@Curve(x_unit, x_help, y_unit=None, y_help=None)`**
+- Marks KPI as returning curve data (performance curves)
 - `x_unit`/`x_help`: X-axis unit and description
 - `y_unit`/`y_help`: Y-axis unit and description (defaults to main unit/help)
 
-## 2D KPIs (Performance Curves)
+## Curve KPIs (Performance Curves)
 
-2D KPIs return lists of (x, y) coordinate pairs representing performance curves:
+Curve KPIs return lists of (x, y) coordinate pairs representing performance curves:
 
 ```python
 @HigherBetter()
-@TwoDimensional(
-    x_unit="req/s", x_help="Request rate", y_unit="tokens/s", y_help="Achieved throughput"
-)
+@Curve(x_unit="req/s", x_help="Request rate", y_unit="tokens/s", y_help="Achieved throughput")
 @KPIMetadata(help="Throughput achieved at different request rates", unit="tokens/s")
 def throughput_curve(unified_record) -> list[tuple[float, float]]:
     """Throughput vs Request Rate Curve KPI."""
     request_rates = unified_record.metrics.get("request_rate", [])
     throughputs = unified_record.metrics.get("throughput", [])
-    
+
     if len(request_rates) != len(throughputs):
         raise ValueError("Request rates and throughputs arrays must have same length")
 
     return [(float(x), float(y)) for x, y in zip(request_rates, throughputs)]
 ```
 
-### 2D KPI Output Format
+### Curve KPI Output Format
 
-2D KPIs generate structured JSON output:
+Curve KPIs generate structured JSON output:
 
 ```json
 {
@@ -90,7 +88,7 @@ def throughput_curve(unified_record) -> list[tuple[float, float]]:
     "count": 2
   },
   "higher_is_better": true,
-  "is_2d": true,
+  "is_curve": true,
   "name": "Throughput vs Request Rate Curve",
   "help": "Throughput achieved at different request rates",
   "x_unit": "req/s",
@@ -125,7 +123,7 @@ def my_kpi_function(unified_record) -> float:
 
 **For KPI Computation**: Functions are discovered in the KPI handler's module using `inspect.getmodule()`.
 
-**For Metadata Extraction**: The hierarchical format transformer attempts to import the main plugin module to extract decorator metadata. If this fails (e.g., due to heavy dependencies), the transformer preserves metadata from the original v1 KPI records, ensuring 2D KPI information (`x_unit`, `y_unit`, `x_help`, `y_help`) is not lost during format conversion.
+**For Metadata Extraction**: The hierarchical format transformer attempts to import the main plugin module to extract decorator metadata. If this fails (e.g., due to heavy dependencies), the transformer preserves metadata from the original v1 KPI records, ensuring curve KPI information (`x_unit`, `y_unit`, `x_help`, `y_help`) is not lost during format conversion.
 
 ### Integration with PostProcessingPlugin
 
@@ -173,11 +171,11 @@ class MyKpiHandler:
                         "source": {"test_base_path": record.test_base_path},
                     }
 
-                    # Add 2D-specific metadata if this is a 2D KPI
-                    if getattr(kpi_func, "_kpi_is_2d", False):
+                    # Add curve-specific metadata if this is a curve KPI
+                    if getattr(kpi_func, "_kpi_is_curve", False):
                         kpi_record.update(
                             {
-                                "is_2d": True,
+                                "is_curve": True,
                                 "x_unit": kpi_func._kpi_x_unit,
                                 "x_help": kpi_func._kpi_x_help,
                                 "y_unit": getattr(kpi_func, "_kpi_y_unit", None)
@@ -232,10 +230,10 @@ def extract_test_labels(record) -> dict[str, Any]:
     }
 ```
 
-### 3. 2D Data Validation
+### 3. Curve Data Validation
 
 ```python
-@TwoDimensional(x_unit="x", x_help="X values", y_unit="y", y_help="Y values")
+@Curve(x_unit="x", x_help="X values", y_unit="y", y_help="Y values")
 @KPIMetadata(help="Performance curve", unit="y")
 def performance_curve(unified_record) -> list[tuple[float, float]]:
     """Performance Curve KPI."""
@@ -265,16 +263,16 @@ def optional_kpi(unified_record) -> float:
     return unified_record.metrics.get("optional_value", 0.0)
 ```
 
-### 5. 2D Metadata Preservation
+### 5. Curve Metadata Preservation
 
-Always include 2D metadata in your KPI handler implementation to ensure proper display:
+Always include curve metadata in your KPI handler implementation to ensure proper display:
 
 ```python
 # In your KPI handler's compute_kpis method
-if getattr(kpi_func, "_kpi_is_2d", False):
+if getattr(kpi_func, "_kpi_is_curve", False):
     kpi_record.update(
         {
-            "is_2d": True,
+            "is_curve": True,
             "x_unit": kpi_func._kpi_x_unit,
             "x_help": kpi_func._kpi_x_help,
             "y_unit": getattr(kpi_func, "_kpi_y_unit", None) or kpi_func._kpi_unit,
@@ -304,7 +302,7 @@ The default output format groups KPIs by test with metadata:
           "id": "throughput",
           "value": 150.5,
           "higher_is_better": true,
-          "is_2d": false,
+          "is_curve": false,
           "unit": "tokens/s",
           "name": "Throughput",
           "help": "Token generation rate"

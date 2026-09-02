@@ -16,6 +16,7 @@ import click
 import yaml
 from pydantic import ValidationError
 
+from projects.caliper.engine.kpi.dataclasses import CaliperTestMetadata
 from projects.caliper.orchestration.postprocess import (
     run_postprocess_from_orchestration_config,
 )
@@ -39,19 +40,24 @@ def write_test_labels(
     dump_config: bool = True,
     kpi_labels: dict[str, str] | None = None,
     mlflow_destination: dict[str, str] | None = None,
+    timing: dict[str, Any] | None = None,
 ) -> Path:
-    """Write a __test_labels__.yaml file to mark a directory as a Caliper test base.
+    """Write Caliper test metadata files to mark a directory as a Caliper test base.
+
+    Creates both __caliper_test_metadata__.yaml (new format) and __test_labels__.yaml
+    (legacy format) with identical content for backward compatibility.
 
     Args:
-        directory: Directory to create the test labels file in
+        directory: Directory to create the test metadata files in
         labels: Dictionary of label key-value pairs
         version: Version string for the test labels format (default: "1")
         dump_config: Whether to save project configuration to config.yaml (default: True)
         kpi_labels: Optional dictionary of KPI labels for system context
         mlflow_destination: Optional MLflow run destination (run_id, experiment_id, workspace)
+        timing: Optional dictionary of timing information for test phases
 
     Returns:
-        Path to the created __test_labels__.yaml file
+        Path to the created __caliper_test_metadata__.yaml file
 
     Example:
         write_test_labels(
@@ -67,21 +73,31 @@ def write_test_labels(
             }
         )
     """
-    test_labels_path = directory / "__test_labels__.yaml"
-    payload = {
-        "version": version,
-        "labels": labels,
-    }
+    # Create typed metadata structure
+    metadata = CaliperTestMetadata(
+        version=version,
+        labels=labels,
+        kpi_labels=kpi_labels,
+        mlflow_destination=mlflow_destination,
+        timing=timing,
+    )
 
-    if kpi_labels:
-        payload["kpi_labels"] = kpi_labels
+    # Convert to dictionary for YAML serialization
+    payload = metadata.to_dict()
 
-    if mlflow_destination:
-        payload["mlflow_destination"] = mlflow_destination
+    # Define both file paths
+    metadata_path = directory / "__caliper_test_metadata__.yaml"
+    legacy_path = directory / "__test_labels__.yaml"
 
-    # Create directory and write YAML
-    test_labels_path.parent.mkdir(parents=True, exist_ok=True)
-    with test_labels_path.open("w", encoding="utf-8") as handle:
+    # Create directory and write to both files for backward compatibility
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write new format
+    with metadata_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(payload, handle, sort_keys=False)
+
+    # Write legacy format (identical content)
+    with legacy_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(payload, handle, sort_keys=False)
 
     # Optionally save project configuration
@@ -96,7 +112,7 @@ def write_test_labels(
         except Exception as e:
             logger.warning(f"Failed to save project configuration: {e}")
 
-    return test_labels_path
+    return metadata_path
 
 
 def generate_postprocess_status_report(

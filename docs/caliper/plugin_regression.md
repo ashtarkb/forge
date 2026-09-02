@@ -133,31 +133,51 @@ Result:
 - Baseline mean: 92.5
 - Relative change: (90.0 − 92.5) / 92.5 = −2.7% → **PASS** (below 10% threshold)
 
-## Result Structure
+## Report Structure
 
-Each result entry in the report contains:
+The KPI analysis report uses dataclasses with a flatter structure:
 
 ```json
 {
-  "kpi_id": "throughput",
-  "labels": {"product_version": "v2.0", "deployment_profile": "simple"},
-  "comparison_keys": {"product_version": "v2.0"},
-  "verdict": "PASS",
-  "higher_is_better": true,
-  "baseline_count": 2,
-  "current_value": {"comparison_keys": {"product_version": "v2.0"}, "value": 90.0},
-  "baseline_values": [
-    {"comparison_keys": {"product_version": "v1.9"}, "value": 100.0},
-    {"comparison_keys": {"product_version": "v1.8"}, "value": 85.0}
-  ],
-  "details": {
-    "baseline_mean": 92.5,
-    "relative_change": -0.027
-  }
+  "status": "PASS",
+  "regression_count": 0,
+  "summary": {
+    "tested": {
+      "total_kpis": 1,
+      "pass_count": 1,
+      "skipped_count": 0
+    }
+  },
+  "findings": [
+    {
+      "kpi_id": "throughput",
+      "labels": {"product_version": "v2.0", "deployment_profile": "simple"},
+      "comparison_keys": {"product_version": "v2.0"},
+      "is_regression": false,
+      "higher_is_better": true,
+      "baseline_count": 2,
+      "current_value": {"comparison_keys": {"product_version": "v2.0"}, "value": 90.0},
+      "baseline_values": [
+        {"comparison_keys": {"product_version": "v1.9"}, "value": 100.0},
+        {"comparison_keys": {"product_version": "v1.8"}, "value": 85.0}
+      ],
+      "baseline_mean": 92.5,
+      "relative_change": -0.027
+    }
+  ]
 }
 ```
 
-SKIPPED entries (non-scalar value, insufficient baselines) are excluded from `results` but counted in `tested.skipped`.
+### Key Changes from Previous Format
+
+- **Top-level status**: Uses `OverallStatus` enum (`PASS`, `REGRESSION_DETECTED`, `NO_BASELINE`)
+- **Flatter structure**: Moved from nested `analysis`/`overall` to top-level fields
+- **Boolean flags**: `is_regression` replaces string `verdict` field
+- **Summary restructuring**: Test counts moved to `summary.tested` object
+- **Findings array**: Report details moved from `results` to `findings`
+- **Direct fields**: `relative_change` and other details moved to top level of findings
+
+SKIPPED entries (non-scalar value, insufficient baselines) are excluded from `findings` but counted in `summary.tested.skipped_count`.
 
 ## Orchestration Integration
 

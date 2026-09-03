@@ -23,6 +23,7 @@ classifiers = [
 
 dependencies = [
     "plotly>=5.17.0",
+    "kaleido>=1.0.0",
     "dash>=2.14.0",
     "dash-bootstrap-components>=1.5.0",
     "jinja2",
@@ -71,7 +72,7 @@ matrix_benchmarking = [
     "pandas",
     "dash",
     "plotly",
-    "kaleido==0.2.1",
+    "kaleido>=1.0.0",
     "fire",
     "pyyaml",
     "BeautifulSoup4==4.11.*",

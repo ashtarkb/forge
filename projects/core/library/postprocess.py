@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,12 @@ import yaml
 from pydantic import ValidationError
 
 from projects.caliper.engine.constants import METADATA_FILE
-from projects.caliper.engine.kpi.dataclasses import CaliperTestMetadata
+from projects.caliper.engine.kpi.dataclasses import (
+    CaliperTestMetadata,
+    CompletionData,
+    MlflowDestination,
+    TimingData,
+)
 from projects.caliper.orchestration.postprocess import (
     run_postprocess_from_orchestration_config,
 )
@@ -33,20 +39,18 @@ from projects.core.library.status_to_html import convert_status_yaml_to_html
 logger = logging.getLogger(__name__)
 
 
-def write_test_labels(
+def create_test_metadata(
     directory: Path,
     labels: dict[str, str],
     *,
     version: str = "1",
     dump_config: bool = True,
     kpi_labels: dict[str, str] | None = None,
-    mlflow_destination: dict[str, str] | None = None,
-    timing: dict[str, Any] | None = None,
+    mlflow_destination: MlflowDestination | None = None,
+    timing: TimingData | None = None,
+    completion: CompletionData | None = None,
 ) -> Path:
     """Write Caliper test metadata files to mark a directory as a Caliper test base.
-
-    Creates both caliper metadata file (new format) and __test_labels__.yaml
-    (legacy format) with identical content for backward compatibility.
 
     Args:
         directory: Directory to create the test metadata files in
@@ -54,14 +58,15 @@ def write_test_labels(
         version: Version string for the test labels format (default: "1")
         dump_config: Whether to save project configuration to config.yaml (default: True)
         kpi_labels: Optional dictionary of KPI labels for system context
-        mlflow_destination: Optional MLflow run destination (run_id, experiment_id, workspace)
-        timing: Optional dictionary of timing information for test phases
+        mlflow_destination: Optional MLflow run destination dataclass
+        timing: Optional timing data with test phases
+        completion: Optional test completion status
 
     Returns:
         Path to the created caliper metadata file file
 
     Example:
-        write_test_labels(
+        create_test_metadata(
             test_dir,
             {
                 "model": "llama-3",
@@ -76,11 +81,12 @@ def write_test_labels(
     """
     # Create typed metadata structure
     metadata = CaliperTestMetadata(
-        version=version,
         labels=labels,
+        version=version,
         kpi_labels=kpi_labels,
         mlflow_destination=mlflow_destination,
         timing=timing,
+        completion=completion,
     )
 
     # Convert to dictionary for YAML serialization
@@ -109,6 +115,102 @@ def write_test_labels(
             logger.warning(f"Failed to save project configuration: {e}")
 
     return metadata_path
+
+
+def update_test_labels_with_timing(
+    directory: Path, timing_section: str, timing_event: str
+) -> datetime:
+    """Update caliper metadata file with timing information.
+
+    Args:
+        directory: Directory to create the test metadata files in
+        timing_section: Section name (e.g., 'benchmark', 'test')
+        timing_event: Event name ('start' or 'end')
+    """
+
+    if timing_event not in ("start", "end"):
+        raise ValueError(f"Unexpected timing event '{timing_event}'")
+
+    timestamp_dt = datetime.now(UTC)
+    timestamp = timestamp_dt.isoformat().replace("+00:00", "Z")
+
+    test_labels_path = directory / METADATA_FILE
+
+    if not test_labels_path.exists():
+        logging.error("Caliper metadata file not found ...")
+        return datetime.now(UTC)
+
+    # Read existing labels and parse with dataclass
+    with test_labels_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    metadata = CaliperTestMetadata.from_dict(data)
+
+    # Ensure timing exists
+    if not metadata.timing:
+        metadata.timing = TimingData()
+
+    # Get or create the phase
+    phase = metadata.timing.get_phase(timing_section)
+    if not phase:
+        if timing_event == "start":
+            metadata.timing.set_phase(timing_section, timestamp)
+        else:
+            # If we're setting end but no start exists, create with empty start
+            metadata.timing.set_phase(timing_section, "", timestamp)
+    else:
+        # Update existing phase
+        if timing_event == "start":
+            phase.start = timestamp
+        elif timing_event == "end":
+            phase.end = timestamp
+
+    # Write updated labels
+    with test_labels_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(metadata.to_dict(), f, sort_keys=False)
+
+    logger.info(
+        "Updated test labels with timing: %s.%s = %s", timing_section, timing_event, timestamp
+    )
+
+    return timestamp_dt
+
+
+def update_test_labels_with_status(directory: Path, success: bool, message: str) -> None:
+    """Update caliper metadata file with test execution status and end time.
+
+    Args:
+        directory: Directory to create the test metadata files in
+        success: True if test succeeded, False if failed
+        message: Status message describing the result
+    """
+    test_labels_path = directory / METADATA_FILE
+
+    # Read existing labels
+    if not test_labels_path.exists():
+        logging.error("Caliper metadata file not found ...")
+        return
+
+    with test_labels_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    metadata = CaliperTestMetadata.from_dict(data)
+
+    # Add completion information using dataclass
+    metadata.completion = CompletionData(success=success, message=message)
+
+    # Write updated labels
+    with test_labels_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(metadata.to_dict(), f, sort_keys=False)
+
+    logger.info(
+        "Updated test labels with completion status success=%s, message=%s",
+        success,
+        message,
+    )
+
+    if not success:
+        (test_labels_path.parent / "FAILURE.txt").write_text(message)
 
 
 def generate_postprocess_status_report(
@@ -410,17 +512,6 @@ def run_orchestration_postprocess(
         output_dir=output_dir,
         test_outcome=test_outcome,
     )
-
-    status_path = output_dir / "postprocess_status.yaml"
-    try:
-        status_path.parent.mkdir(parents=True, exist_ok=True)
-        status_path.write_text(
-            yaml.dump(result, indent=2, default_flow_style=False, sort_keys=False),
-            encoding="utf-8",
-        )
-        logger.info("Wrote postprocess status YAML to %s", status_path)
-    except OSError as e:
-        logger.warning("Could not write %s: %s", status_path, e)
 
     # Generate HTML reports
     try:

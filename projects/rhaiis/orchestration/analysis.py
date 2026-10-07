@@ -130,6 +130,7 @@ def run_regression_check(
     from projects.core.library import config
     from projects.rhaiis.postprocess.regression import METRICS, PROFILE_MAP, run_regression_analysis
 
+    owner = config.project.get_config("ci_job.owner", "") or ""
     s3_cfg = config.project.get_config("rhaiis.s3", {})
     csv_dashboard_cfg = config.project.get_config("caliper.postprocess.csv_dashboard", {})
     s3_bucket = s3_cfg.get("bucket", "")
@@ -193,6 +194,7 @@ def run_regression_check(
                 accelerator=accelerator,
                 job_id=run_uuid,
                 slack_user=slack_user,
+                owner=owner,
                 notification_vault="psap-forge-notifications",
                 report_url=report_url,
                 tp=str(tp),
@@ -206,6 +208,7 @@ def run_regression_check(
                 accelerator=accelerator,
                 job_id=run_uuid,
                 slack_user=slack_user,
+                owner=owner,
                 notification_vault="psap-forge-notifications",
                 tp=str(tp),
                 dp=str(dp),

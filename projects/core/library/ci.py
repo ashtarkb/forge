@@ -8,7 +8,6 @@ and tooling setup for consistent behavior across all projects.
 
 import functools
 import logging
-import pathlib
 import sys
 import traceback
 
@@ -21,8 +20,15 @@ from projects.core.library import env
 logger = logging.getLogger(__name__)
 
 
+def get_ci_metadata_dir_location():
+    metadata_dir = env.BASE_ARTIFACT_DIR / "000__ci_metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    return metadata_dir
+
+
 # CI metadata directory path
-def get_ci_metadata_dir(base_ci_dir=None):
+def get_ci_metadata_dir(base_ci_dir, any_level=False):
     """Get the CI metadata directory path.
 
     Args:
@@ -34,15 +40,19 @@ def get_ci_metadata_dir(base_ci_dir=None):
     Raises:
         ValueError: If both base_ci_dir and env.BASE_ARTIFACT_DIR are None
     """
-    if base_ci_dir is not None:
-        return pathlib.Path(base_ci_dir) / "000__ci_metadata"
 
-    if env.BASE_ARTIFACT_DIR is not None:
-        return env.BASE_ARTIFACT_DIR / "000__ci_metadata"
+    meta_dir = base_ci_dir / "000__ci_metadata"
+    if meta_dir.exists():
+        return meta_dir
 
-    raise ValueError(
-        "Cannot determine CI metadata directory: both base_ci_dir parameter and env.BASE_ARTIFACT_DIR are None"
-    )
+    if not any_level:
+        raise ValueError(f"Cannot determine CI metadata directory in {base_ci_dir}")
+
+    rglob = list(base_ci_dir.rglob("000__ci_metadata"))
+    if not rglob:
+        raise ValueError(f"Cannot find CI metadata directory at any level of {base_ci_dir}")
+
+    return rglob[0]
 
 
 class HelpfulGroup(click.Group):
@@ -169,25 +179,39 @@ def safe_ci_entrypoint(command_func):
     @functools.wraps(command_func)
     def wrapper(*args, **kwargs):
         exit_code = 0
+        reason = None
         try:
             result = command_func(*args, **kwargs)
-            exit_code = result if result is not None else 0
+            if result is None:
+                exit_code = 0
+            elif isinstance(result, tuple) and len(result) == 2:
+                exit_code, reason = result
+            else:
+                exit_code = result
         except Exception as e:
             handle_ci_exception(e)
             exit_code = 1
+            reason = str(e)
 
         # Save exit status to YAML file
         try:
-            metadata_dir = get_ci_metadata_dir()
+            metadata_dir = get_ci_metadata_dir_location()
             metadata_dir.mkdir(parents=True, exist_ok=True)
 
             exit_status_file = metadata_dir / "exit_status.yaml"
             exit_status_data = {"return_code": exit_code}
+            if reason is not None:
+                exit_status_data["reason"] = reason
 
             with open(exit_status_file, "w", encoding="utf-8") as f:
                 yaml.dump(exit_status_data, f, default_flow_style=False)
 
-            logger.info(f"Exit status saved: {exit_status_file} (return_code: {exit_code})")
+            if reason:
+                logger.info(
+                    f"Exit status saved: {exit_status_file} (return_code: {exit_code}, reason: {reason})"
+                )
+            else:
+                logger.info(f"Exit status saved: {exit_status_file} (return_code: {exit_code})")
         except Exception as save_error:
             logger.warning(f"Failed to save exit status: {save_error}")
 
@@ -211,7 +235,7 @@ def add_notification_file(
     Returns:
         Path to the created notification file, or None if creation failed
     """
-    metadata_dir = get_ci_metadata_dir(base_ci_dir)
+    metadata_dir = get_ci_metadata_dir_location()
     notifications_dir = metadata_dir / "notifications"
     notifications_dir.mkdir(parents=True, exist_ok=True)
 
@@ -232,6 +256,7 @@ def add_notification_file(
             f.write(message)
 
         logger.info(f"Created notification file: {file_path}")
+        logger.info(f"{message}")
         return str(file_path)
 
     except Exception as e:

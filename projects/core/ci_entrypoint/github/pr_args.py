@@ -157,7 +157,7 @@ def handle_test_directive(line: str) -> dict[str, Any]:
         # Build result with test info and PR positional arguments
         result.update(
             {
-                "ci_job.name": test_name,
+                "ci_job.display_name": test_name,
                 "ci_job.project": project_name,
                 "ci_job.args": args,
             }
@@ -325,7 +325,9 @@ def get_supported_directives() -> dict[str, str]:
 
 
 def parse_directives(
-    text: str, artifact_path: Path | None = None, last_comment: str | None = None
+    text: str,
+    artifact_path: Path | None = None,
+    last_comment: str | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     Parse all directives from the given text using handler mapping.
@@ -480,6 +482,7 @@ def parse_pr_arguments(
 
     # Search comments in reverse order (most recent first)
     last_user_test_comment = None
+    last_user_test_comment_author = None
     for comment in reversed(last_comment_page_data):
         author_login = comment.get("user", {}).get("login", "")
         comment_body = comment.get("body", "")
@@ -488,20 +491,30 @@ def parse_pr_arguments(
         if is_user_authorized(author_login, pr_author, owners_data):
             if test_anchor in comment_body:
                 last_user_test_comment = comment_body
+                last_user_test_comment_author = author_login
                 break
 
     if not last_user_test_comment:
         raise ValueError(
             f"No comment found from authorized users (PR author '{pr_author}' or users in OWNERS file) containing '{test_anchor}'"
         )
+    if not last_user_test_comment_author:
+        raise ValueError(f"Selected authorized comment containing '{test_anchor}' has no author")
 
     # Parse all directives from PR body and last comment
     combined_text = (pr_data.get("body", "") or "") + "\n" + last_user_test_comment
 
     # Parse directives using the modular parser
     config, found_directives = parse_directives(
-        combined_text, artifact_path, last_user_test_comment
+        combined_text,
+        artifact_path,
+        last_user_test_comment,
     )
+
+    # The Fournos launcher consumes this existing config value when setting
+    # spec.owner on the submitted job.
+    if test_name == "fournos":
+        config["fournos.job.owner"] = last_user_test_comment_author
 
     return config, found_directives
 

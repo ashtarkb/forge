@@ -16,8 +16,8 @@ from projects.caliper.engine.kpi import (
     KpiRecord,
 )
 from projects.caliper.engine.model import (
+    BaseTestNode,
     ParseResult,
-    TestBaseNode,
     UnifiedResultRecord,
     UnifiedRunModel,
 )
@@ -101,6 +101,13 @@ DASHBOARD_METADATA_LABEL_KEYS = frozenset(
 )
 
 
+def is_benchmarks_artifact(path: Path) -> bool:
+    """Return whether ``path`` is a GuideLLM benchmark result artifact."""
+    return path.suffix == ".json" and (
+        path.name == "benchmarks.json" or path.name.startswith("benchmarks-")
+    )
+
+
 def canonical_json(value: Any) -> str:
     """Serialize structured metadata deterministically for labels and CSVs."""
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
@@ -165,9 +172,10 @@ def _milliseconds_to_seconds(value: Any) -> Any:
 
 
 def enrich_guidellm_parse_result(
-    base_result: ParseResult, nodes: list[TestBaseNode]
+    base_result: ParseResult, nodes: list[BaseTestNode]
 ) -> ParseResult:
     """Preserve dashboard metrics from raw GuideLLM files on parsed records."""
+    job_mlflow_destination = _read_job_mlflow_destination()
     nodes_by_path = {str(node.test_path): node for node in nodes}
     records: list[UnifiedResultRecord] = []
     for record in base_result.records:
@@ -177,6 +185,11 @@ def enrich_guidellm_parse_result(
             continue
         extra, curves = _extract_dashboard_metrics(node)
         metrics = {**record.metrics, **extra}
+        if job_mlflow_destination:
+            if not metrics.get("mlflow_run_id"):
+                metrics["mlflow_run_id"] = job_mlflow_destination["run_id"]
+            if not metrics.get("mlflow_experiment_id"):
+                metrics["mlflow_experiment_id"] = job_mlflow_destination["experiment_id"]
         metrics["performance_curves"] = {
             **metrics.get("performance_curves", {}),
             **curves,
@@ -193,24 +206,44 @@ def enrich_guidellm_parse_result(
     return ParseResult(records=records, warnings=base_result.warnings)
 
 
-def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict[str, list]]:
-    files = sorted(
-        path
-        for path in node.artifact_paths
-        if path.name == "benchmarks.json"
-        or (path.name.startswith("benchmarks-rate-") and path.suffix == ".json")
-    )
+def _read_job_mlflow_destination() -> dict[str, str]:
+    """Read the single Fournos job-level MLflow destination for dashboard labels."""
+    from projects.core.library import env
+
+    if not env.running_inside_fournos():
+        return {}
+
+    from projects.caliper.orchestration.export import read_mlflow_destination_marker
+
+    destination = read_mlflow_destination_marker()
+    if destination is None:
+        logger.warning(
+            "FOURNOS CI is enabled but no MLflow destination marker was found; "
+            "dashboard MLflow IDs will be empty"
+        )
+        return {}
+    return {
+        "run_id": destination.run_id,
+        "experiment_id": destination.experiment_id,
+    }
+
+
+def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict[str, list]]:
+    files = sorted(path for path in node.artifact_paths if is_benchmarks_artifact(path))
     benchmarks: list[dict[str, Any]] = []
     metadata: dict[str, Any] = {}
     args: dict[str, Any] = {}
+    spec: dict[str, Any] = {}
     for path in files:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as error:
+            logger.warning("Failed to read GuideLLM benchmark artifact %s: %s", path, error)
             continue
         benchmarks.extend(payload.get("benchmarks", []))
         metadata = metadata or payload.get("metadata", {})
         args = args or payload.get("args", {})
+        spec = spec or payload.get("config", {}).get("spec", {})
     if not benchmarks:
         return {}, {}
 
@@ -224,6 +257,10 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
         )
     )
     data_values = args.get("data", []) if isinstance(args, dict) else []
+    if not data_values:
+        spec_data = spec.get("data", [])
+        if isinstance(spec_data, list) and spec_data:
+            data_values = spec_data
     if not data_values:
         fallback_data = (
             benchmarks[0]
@@ -245,20 +282,37 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
                 tokens = parsed_data
         except json.JSONDecodeError:
             tokens = dict(re.findall(r"(\w+)=([\d.]+)", data_text))
+    token_data = tokens
+    prefix_buckets = tokens.get("prefix_buckets")
+    if (
+        isinstance(prefix_buckets, list)
+        and len(prefix_buckets) == 1
+        and isinstance(prefix_buckets[0], dict)
+    ):
+        token_data = {**tokens, **prefix_buckets[0]}
     starts = [
         b.get("scheduler_metrics", {}).get("start_time", b.get("start_time")) for b in benchmarks
     ]
     ends = [b.get("scheduler_metrics", {}).get("end_time", b.get("end_time")) for b in benchmarks]
     starts = [value for value in starts if value is not None]
     ends = [value for value in ends if value is not None]
+    request_type = ""
+    if isinstance(args, dict) and args.get("request_type"):
+        request_type = args["request_type"]
+    elif spec.get("backend", {}).get("request_format"):
+        request_type = spec["backend"]["request_format"]
     extra = {
         "guidellm_version": metadata.get("guidellm_version", ""),
         "prompt_toks": int(float(tokens["prompt_tokens"])) if "prompt_tokens" in tokens else "",
         "output_toks": int(float(tokens["output_tokens"])) if "output_tokens" in tokens else "",
         "turns": int(float(tokens["turns"])) if "turns" in tokens else "",
-        "prefix_tokens": int(float(tokens["prefix_tokens"])) if "prefix_tokens" in tokens else "",
-        "prefix_count": int(float(tokens["prefix_count"])) if "prefix_count" in tokens else "",
-        "request_type": args.get("request_type", "") if isinstance(args, dict) else "",
+        "prefix_tokens": (
+            int(float(token_data["prefix_tokens"])) if "prefix_tokens" in token_data else ""
+        ),
+        "prefix_count": (
+            int(float(token_data["prefix_count"])) if "prefix_count" in token_data else ""
+        ),
+        "request_type": request_type,
         "guidellm_start_time_ms": int(min(starts) * 1000) if starts else "",
         "guidellm_end_time_ms": int(max(ends) * 1000) if ends else "",
     }

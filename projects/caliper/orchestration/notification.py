@@ -8,6 +8,8 @@ from the public API with object-oriented step formatting.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from projects.caliper.public import PostprocessStatus, StepStatus
 
 
@@ -19,67 +21,73 @@ def format_postprocess_status_notification(
     Args:
         status: Typed PostprocessStatus object
         get_file_link: Optional callback function that takes a file path and returns a URL.
-                      Signature: get_file_link(file_path: str) -> str
+                      Signature: get_file_link(file_path: Path | str) -> str
 
     Returns:
         Formatted notification text to include in GitHub notification
     """
-    if not status:
-        return ""
+
+    if not status or not status.steps:
+        return []
 
     lines = []
 
     # Check overall status (keep unchanged regardless of abort status)
     status_emoji = "✅" if status.is_success() else "❌"
-    lines.append(f"**Post-processing Status** {status_emoji}")
+    base_directory = Path(status.base_directory)
 
-    # Add steps information if available, sorted by completion time
-    if status.steps:
-        # Convert steps from list[dict] format to sorted list of (step_name, step_data) tuples
-        step_tuples = []
-        for step_dict in status.steps:
-            for step_name, step_data in step_dict.items():
-                step_tuples.append((step_name, step_data))
+    def postprocess_get_file_link(file_path: Path | str, text: str = None) -> str:
+        if not get_file_link:
+            return text
 
-        # Sort by completion timestamp, with fallback to step name for stable ordering
-        sorted_steps = sorted(
-            step_tuples,
-            key=lambda item: (
-                item[1].get("completed_at", 0) or 0,  # Use completed_at if available, else 0
-                item[0],  # fallback to step name for stable ordering
-            ),
+        return get_file_link(base_directory / file_path, text)
+
+    lines.append(f"{status_emoji} **Post-processing Status** `{base_directory}`")
+
+    # Convert steps from list[dict] format to sorted list of (step_name, step_data) tuples
+    step_tuples = []
+    for step_dict in status.steps:
+        for step_name, step_data in step_dict.items():
+            step_tuples.append((step_name, step_data))
+
+    # Sort by completion timestamp, with fallback to step name for stable ordering
+    sorted_steps = sorted(
+        step_tuples,
+        key=lambda item: (
+            item[1].get("completed_at", 0) or 0,  # Use completed_at if available, else 0
+            item[0],  # fallback to step name for stable ordering
+        ),
+    )
+
+    for step_name, step_data in sorted_steps:
+        step_emoji = _get_step_emoji(step_data.get("status", "unknown"))
+
+        # Create step name as link to log file if available
+        log_file = step_data.get("log_file")
+        if log_file:
+            step_name_display = postprocess_get_file_link(log_file, text=f"**{step_name}**")
+        else:
+            step_name_display = f"**{step_name}**"
+
+        # Format step with message if available
+        lines.append(f"- {step_emoji} {step_name_display}: `{step_data.get('status', 'unknown')}`")
+        error = step_data.get("error")
+        if error:
+            lines.append(f"  * ⚠️ `{error}`")
+
+        message = step_data.get("message")
+        if message:
+            lines.append(f"  * `{message}`")
+
+        reason = step_data.get("reason")
+        if reason:
+            lines.append(f"  * `{reason}`")
+
+        # Use object-oriented step formatter to handle step-specific details
+        step_details = _format_step_details_with_formatters(
+            step_name, step_data, postprocess_get_file_link
         )
-
-        for step_name, step_data in sorted_steps:
-            step_emoji = _get_step_emoji(step_data.get("status", "unknown"))
-
-            # Create step name as link to log file if available
-            log_file = step_data.get("log_file")
-            if log_file and get_file_link:
-                try:
-                    log_url = get_file_link(log_file)
-                    step_name_display = f"[**{step_name}**]({log_url})"
-                except Exception:
-                    # Fallback to plain text if link generation fails
-                    step_name_display = f"**{step_name}**"
-            else:
-                step_name_display = f"**{step_name}**"
-
-            # Format step with message if available
-            lines.append(
-                f"- {step_emoji} {step_name_display}: `{step_data.get('status', 'unknown')}`"
-            )
-            message = step_data.get("message")
-            if message:
-                lines.append(f"  * `{message}`")
-
-            reason = step_data.get("reason")
-            if reason:
-                lines.append(f"  * `{reason}`")
-
-            # Use object-oriented step formatter to handle step-specific details
-            step_details = _format_step_details_with_formatters(step_name, step_data, get_file_link)
-            lines.extend(step_details)
+        lines.extend(step_details)
 
     return "\n".join(lines) if lines else ""
 
@@ -115,8 +123,9 @@ def _create_file_link(file_path: str, emoji: str, get_file_link: callable | None
 
         output_path = Path(file_path)
         filename = output_path.name
-        file_url = get_file_link(file_path)
-        return f"  - {emoji} [{filename}]({file_url})"
+        # Pass Path object to get_file_link
+        file_link = get_file_link(output_path)
+        return f"  - {emoji} {file_link}"
     except Exception:
         filename = file_path.split("/")[-1]
         return f"  - {emoji} {filename}"
@@ -125,14 +134,15 @@ def _create_file_link(file_path: str, emoji: str, get_file_link: callable | None
 def _format_artifacts_to_kpis_step(step_data: dict, get_file_link: callable | None) -> list[str]:
     """Format artifacts_to_kpis step details."""
     lines = []
-    output_file = step_data.get("output_file")
-    if output_file:
-        lines.append(_create_file_link(output_file, "📄", get_file_link))
 
     # Include HTML file if available
     html_file = step_data.get("html_file")
     if html_file:
         lines.append(_create_file_link(html_file, "🌐", get_file_link))
+
+    output_file = step_data.get("output_file")
+    if output_file:
+        lines.append(_create_file_link(output_file, "📄", get_file_link))
 
     return lines
 
@@ -156,32 +166,16 @@ def _format_artifacts_to_ai_data_step(step_data: dict, get_file_link: callable |
     # AI data directory link
     ai_data_dir = step_data.get("ai_data_dir")
     if ai_data_dir:
-        try:
-            # Extract relative path from the full path
-            ai_data_dir_relative = ai_data_dir.split("/")[-1]  # Get just "ai_eval"
-            dir_url = get_file_link(ai_data_dir_relative)
-            lines.append(f"  - 📁 [AI Eval Directory]({dir_url})")
-        except Exception:
-            lines.append(f"  - 📁 AI Eval Directory: {ai_data_dir}")
+        # Extract relative path from the full path
+        ai_data_dir_relative = ai_data_dir.split("/")[-1]  # Get just "ai_eval"
+        dir_link = get_file_link(Path(ai_data_dir_relative), text="AI Eval Directory")
+        lines.append(f"  - 📁 {dir_link}")
 
     # Output file link
     output_file = step_data.get("output_file")
     if output_file:
-        try:
-            import os
-
-            output_file_relative = os.path.relpath(
-                output_file,
-                ai_data_dir or "",
-            )
-            if ai_data_dir and "ai_eval" in ai_data_dir:
-                output_file_relative = f"ai_eval/{output_file_relative}"
-            file_url = get_file_link(output_file_relative)
-            filename = output_file.split("/")[-1]
-            lines.append(f"  - 📄 [{filename}]({file_url})")
-        except Exception:
-            filename = output_file.split("/")[-1]
-            lines.append(f"  - 📄 {filename}")
+        file_link = get_file_link(Path(output_file))
+        lines.append(f"  - 📄 {file_link}")
 
     return lines
 
@@ -229,21 +223,19 @@ def _format_analyse_kpis_step(step_data: dict, get_file_link: callable | None) -
     """Format analyse_kpis step details."""
     lines = []
 
+    # Include HTML file if available
+    html_file = step_data.get("html_file")
+    if html_file:
+        lines.append(_create_file_link(html_file, "🌐", get_file_link))
+
     # Show analysis output file
-    output_file = step_data.get("output_file")
-    if output_file:
+    if output_file := step_data.get("output_file"):
         lines.append(_create_file_link(output_file, "📊", get_file_link))
 
     step_status = step_data.get("status")
 
-    # Show error message if step failed
-    if step_status == "failed":
-        error_msg = step_data.get("error")
-        if error_msg:
-            lines.append(f"  - ❌ `{error_msg}`")
-
     # Show regression analysis results if the step was successful
-    elif step_status in ("success", "warning", "regression_detected"):
+    if step_status in ("success", "warning", "regression_detected"):
         # Show regression analysis results
         if step_data.get("regressions_detected"):
             lines.append("  - ❌ Regression detected")
@@ -259,11 +251,6 @@ def _format_analyse_kpis_step(step_data: dict, get_file_link: callable | None) -
         baseline_files_count = step_data.get("baseline_files_count")
         if baseline_files_count is not None:
             lines.append(f"  - 📈 Baseline files analyzed: `{baseline_files_count}`")
-
-    # Include HTML file if available
-    html_file = step_data.get("html_file")
-    if html_file:
-        lines.append(_create_file_link(html_file, "🌐", get_file_link))
 
     return lines
 
@@ -301,25 +288,10 @@ def _format_step_file_links(
     # Flatten the structure - just list all files without grouping by type
     for file_type, files in file_groups.items():
         for file_path in files:
-            try:
-                # Combine output_dir with file_path if available
-                if output_dir:
-                    # Use pathlib to properly join paths and avoid double slashes
-                    from pathlib import Path
-
-                    full_path = str(Path(output_dir) / file_path)
-                else:
-                    full_path = file_path
-
-                file_url = get_file_link(full_path)
-                file_name = _get_display_name(file_path)
-                emoji = "📊" if file_type == "visualization" else "📄"
-                lines.append(f"  - {emoji} [{file_name}]({file_url})")
-            except Exception:
-                # Fallback to plain text if link generation fails
-                file_name = _get_display_name(file_path)
-                emoji = "📊" if file_type == "visualization" else "📄"
-                lines.append(f"  - {emoji} {file_name}")
+            full_path = Path(output_dir) / file_path
+            file_link = get_file_link(full_path, text=_get_display_name(file_path))
+            emoji = "📊" if file_type == "visualization" else "📄"
+            lines.append(f"  - {emoji} {file_link}")
 
     return lines
 
@@ -339,7 +311,6 @@ def _group_files_by_type(file_paths: list[str]) -> dict[str, list[str]]:
 
 def _get_file_type(file_path: str) -> str:
     """Determine file type from path."""
-    from pathlib import Path
 
     ext = Path(file_path).suffix.lower()
 
@@ -359,7 +330,6 @@ def _get_file_type(file_path: str) -> str:
 
 def _get_display_name(file_path: str) -> str:
     """Get display name for a file path."""
-    from pathlib import Path
 
     path = Path(file_path)
 

@@ -5,11 +5,14 @@ LLM-D Project CI Operations
 """
 
 import logging
+import signal
 import types
+from datetime import datetime
 from pathlib import Path
 
 import click
 
+from projects.caliper.orchestration.export import ensure_mlflow_destination_marker
 from projects.caliper.orchestration.postprocess_outcome import TestPhaseOutcome
 from projects.core.agentic.config_review import trigger_config_review_for_ci
 from projects.core.agentic.on_failure import agent_review_on_failure
@@ -32,18 +35,17 @@ from projects.llm_d.orchestration.cleanup_phase import (
 )
 from projects.llm_d.orchestration.preflight_phase import run as preflight_toolbox_run
 from projects.llm_d.orchestration.prepare_sequence import run_prepare_sequence
+from projects.rhoai.library.deploy import list_mandatory_vaults as rhoai_list_mandatory_vaults
 
 logger = logging.getLogger(__name__)
-RHOAI_CUSTOM_CATALOG_VAULTS = [
-    "psap-rhoai-rc",
-    "psap-forge-staging-image-pull",
-]
 
 
 def init(presets=None):
     """Initialize LLM-D orchestration environment"""
     env.init()
     run.init()
+
+    run.register_signal_callback(_signal_callback)
 
     # Set presets configuration if provided
     if presets:
@@ -52,31 +54,31 @@ def init(presets=None):
     config.init(Path(__file__).parent)
 
 
-def list_vaults() -> list[str]:
-    """List all vaults (includes both mandatory and optional)."""
-    all_vaults = vault.phase_vault_list_all()
-    if config.project.get_config("platform.rhoai.custom_catalog.enabled", False):
-        return [*all_vaults, *RHOAI_CUSTOM_CATALOG_VAULTS]
+def init_vaults_for_phase(phase: str):
+    """Initialize vaults for a specific CI phase, including conditional vaults."""
 
-    return all_vaults
+    extra_mandatory = []
+    if phase == "prepare":
+        extra_mandatory.extend(rhoai_list_mandatory_vaults())
+
+    vault.phase_vault_init(phase, extra_mandatory=(extra_mandatory or None))
 
 
-def init_vaults_for_phase(phase: str) -> None:
-    mandatory_vaults = [
-        *config.project.get_config("vaults.all", []),
-        *config.project.get_config(f"vaults.{phase}", []),
-    ]
-    optional_vaults = [
-        *config.project.get_config("vaults.all-optional", []),
-        *config.project.get_config(f"vaults.{phase}-optional", []),
-    ]
+def _signal_callback(sig, frame, log_file):
+    env.reset_artifact_dir()
 
-    if phase == "prepare" and config.project.get_config(
-        "platform.rhoai.custom_catalog.enabled", False
-    ):
-        mandatory_vaults = [*mandatory_vaults, *RHOAI_CUSTOM_CATALOG_VAULTS]
+    sig_name = signal.Signals(sig).name
+    logger.info(f"Signal callback: received {sig_name}")
+    if not log_file:
+        return
 
-    vault.init(mandatory_vaults=mandatory_vaults, optional_vaults=optional_vaults)
+    module_name = (
+        Path(__file__).relative_to(env.FORGE_HOME).with_suffix("").as_posix().replace("/", ".")
+    )
+    with log_file.open("a") as f:
+        f.write(
+            f"{datetime.now()}: {module_name}.{_signal_callback.__qualname__} {sig_name} handler\n"
+        )
 
 
 @click.group(cls=ci_lib.HelpfulGroup)
@@ -101,6 +103,7 @@ def main(ctx, preset):
         return
 
     init_vaults_for_phase(ctx.invoked_subcommand)
+    ensure_mlflow_destination_marker()
 
 
 @main.command()
@@ -191,15 +194,25 @@ def post_cleanup(ctx) -> int:
     return 0
 
 
+def _resolve_spec_defaults(spec: dict) -> None:
+    if not spec.get("cluster") and not spec.get("clusterless"):
+        default_cluster = config.project.get_config("ci_job.llm_d.default_cluster", None)
+        if default_cluster:
+            spec["cluster"] = default_cluster
+            logger.info(f"Set spec.cluster to default: {default_cluster}")
+
+
 main.add_command(
     create_fournos_resolve_entrypoint(
         vault_list_funcs=[
-            list_vaults,
+            vault.phase_vault_list_all,
+            rhoai_list_mandatory_vaults,
             vault.phase_vault_list_all,
             caliper_export_list_vaults,
             caliper_export_list_optional_vaults,
             caliper_agentic_list_vaults,
-        ]
+        ],
+        spec_resolver_func=_resolve_spec_defaults,
     )
 )
 main.add_command(caliper_export_entrypoint)

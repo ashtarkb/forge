@@ -64,6 +64,9 @@ from projects.core.library import env
 
 logger = logging.getLogger(__name__)
 
+# Postprocess status filename constant
+POSTPROCESS_STATUS_FILENAME = "postprocess_status.yaml"
+
 
 def _make_path_relative_to_base(file_path: str | Path, base_dir: Path) -> str:
     """Convert absolute path to relative path from base directory.
@@ -952,7 +955,8 @@ class CaliperPostprocessOrchestrator:
                     VisualizeStepResult(
                         status=StepStatus.FAILED,
                         completed_at=time.time(),
-                        detail=error_msg,
+                        error=error_msg,
+                        message=(status_data or {}).get("message"),
                         exit_code=result.returncode,
                     ),
                     log_file,
@@ -966,7 +970,7 @@ class CaliperPostprocessOrchestrator:
                 VisualizeStepResult(
                     status=StepStatus.FAILED,
                     completed_at=time.time(),
-                    detail=f"{str(e)}\n{traceback.format_exc()}",
+                    error=str(e),
                 ),
                 None,  # No log file if we couldn't even start
             )
@@ -1386,7 +1390,7 @@ class CaliperPostprocessOrchestrator:
                 ai_data_dir = env.ARTIFACT_DIR / ai_data_step["ai_data_dir"]
                 logger.info(f"AI data directory set to: {ai_data_dir}")
             else:
-                logger.warning(
+                logger.info(
                     f"AI data directory not found - step status: {ai_data_step.get('status') if ai_data_step else 'step not found'}, ai_data_dir: {ai_data_step.get('ai_data_dir') if ai_data_step else 'N/A'}"
                 )
 
@@ -1523,8 +1527,9 @@ class CaliperPostprocessOrchestrator:
                 save_postprocess_status_yaml,
             )
 
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            status_file = self.output_dir / "postprocess_status.yaml"
+            output_dir = self.output_dir / "status_files"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            status_file = output_dir / POSTPROCESS_STATUS_FILENAME
 
             # Convert to typed status object
             status = PostprocessStatus.from_orchestration_result(result)

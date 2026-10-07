@@ -13,12 +13,7 @@ import click
 
 from projects.caliper.orchestration.replot import run_replot_from_orchestration_config
 from projects.core.library import ci as ci_lib
-from projects.core.library import config, env, vault
-from projects.core.library.export import (
-    caliper_agentic_list_vaults,
-    caliper_export_list_optional_vaults,
-    caliper_export_list_vaults,
-)
+from projects.core.library import config, env
 
 logger = logging.getLogger(__name__)
 
@@ -39,55 +34,6 @@ def run_replot(*, artifact_directory: Path | None, keep_download_dir: bool | Non
         keep_replot_dir = config.project.get_config(
             "caliper.replot.keep", False, print=False, warn=False
         )
-
-    # Initialize vaults needed for replot operations
-    logger.info("Initializing vaults for replot operations")
-    try:
-        # Collect all required vaults using the same conditional logic as postprocess
-        all_vaults = []
-
-        # Add general project vaults
-        phase_vaults = vault.phase_vault_list_all()
-        all_vaults.extend(phase_vaults)
-        logger.info(f"Added {len(phase_vaults)} phase vaults: {phase_vaults}")
-
-        # Add export-specific vaults (MLflow, S3, notifications)
-        export_vaults = caliper_export_list_vaults()
-        all_vaults.extend(export_vaults)
-        logger.info(f"Added {len(export_vaults)} export vaults: {export_vaults}")
-
-        # Add agentic vaults (models)
-        agentic_vaults = caliper_agentic_list_vaults()
-        all_vaults.extend(agentic_vaults)
-        logger.info(f"Added {len(agentic_vaults)} agentic vaults: {agentic_vaults}")
-
-        # Add optional export vaults (notifications)
-        optional_export_vaults = caliper_export_list_optional_vaults()
-        logger.info(
-            f"Found {len(optional_export_vaults)} optional export vaults: {optional_export_vaults}"
-        )
-
-        # Remove duplicates while preserving order
-        unique_vaults = list(dict.fromkeys(all_vaults))
-        unique_optional_vaults = list(dict.fromkeys(optional_export_vaults))
-
-        logger.info(f"Total required vaults for replot: {len(unique_vaults)} - {unique_vaults}")
-        logger.info(
-            f"Total optional vaults for replot: {len(unique_optional_vaults)} - {unique_optional_vaults}"
-        )
-
-        # Initialize vaults with optional vaults handled separately
-        if unique_vaults or unique_optional_vaults:
-            vault.init(vaults=unique_vaults, optional_vaults=unique_optional_vaults)
-            logger.info(
-                f"Successfully initialized {len(unique_vaults)} required + {len(unique_optional_vaults)} optional vaults for replot"
-            )
-        else:
-            logger.info("No vaults needed for replot operation")
-
-    except Exception as e:
-        logger.warning(f"Failed to initialize vaults for replot: {e}")
-        logger.warning("Continuing with replot operation - some features may not work")
 
     # Load MLflow configuration from export settings to get vault secrets (only if URL provided)
     vault_name = None

@@ -19,3 +19,6 @@ long_test:
 
 agent:
   agentic.enabled: true
+
+fail:
+  skeleton.test.fail: true

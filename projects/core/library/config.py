@@ -5,7 +5,6 @@ import logging
 import os
 import pathlib
 import re
-import sys
 import types
 
 import click
@@ -21,6 +20,9 @@ logger = logging.getLogger(__name__)
 VARIABLE_OVERRIDES_FILENAME = "000__ci_metadata/variable_overrides.yaml"
 
 project = None  # the project config will be populated in init()
+
+# during these steps, avoid crashing in the initialization steps
+FORGE_LENIENT_STEPS = ("resolve-fournos-config", "export-artifacts")
 
 
 class TempValue:
@@ -83,7 +85,9 @@ class Config:
         mandatory_fields = {
             "presets": {},  # Special case: always create as empty dict
             "project": dict.fromkeys(["name", "args"]),
-            "ci_job": dict.fromkeys(["name", "fjob", "cluster", "exclusive", "hardware", "owner"]),
+            "ci_job": dict.fromkeys(
+                ["display_name", "fjob_name", "cluster", "exclusive", "hardware", "owner"]
+            ),
         }
 
         # Apply the mandatory field structure
@@ -166,40 +170,60 @@ class Config:
             logger.fatal(msg)
             raise ValueError(msg)
 
-        for key, value in variable_overrides.items():
-            MAGIC_DEFAULT_VALUE = object()
-            handled_secretly = True  # current_value MUST NOT be printed below.
-            current_value = self.get_config(
-                key,
-                MAGIC_DEFAULT_VALUE,
-                print=False,
-                warn=False,
-                handled_secretly=handled_secretly,
-            )
-            if current_value == MAGIC_DEFAULT_VALUE:
-                try:
-                    # Try to create the key if parent exists and is a dict
-                    self._create_first_parent_config_key(key, value)
-                    self.save_config()
-                except ValueError:
-                    if not ignore_not_found:
-                        raise
+        # Setup presets_applied.txt file for writing variable overrides
+        dest_txt = env.ARTIFACT_DIR / CI_METADATA_DIRNAME / "presets_applied.txt"
+        dest_txt.parent.mkdir(parents=True, exist_ok=True)
 
+        # Collect all override messages to write to file once
+        file_messages = []
+
+        try:
+            for key, value in variable_overrides.items():
+                MAGIC_DEFAULT_VALUE = object()
+                handled_secretly = True  # current_value MUST NOT be printed below.
+                current_value = self.get_config(
+                    key,
+                    MAGIC_DEFAULT_VALUE,
+                    print=False,
+                    warn=False,
+                    handled_secretly=handled_secretly,
+                )
+                if current_value == MAGIC_DEFAULT_VALUE:
+                    try:
+                        # Try to create the key if parent exists and is a dict
+                        self._create_first_parent_config_key(key, value)
+                        self.save_config()
+                    except ValueError:
+                        if not ignore_not_found:
+                            raise
+
+                        if log:
+                            msg = f"config override IGNORED: {key} --> {value}"
+                            logger.info(msg)
+                            file_messages.append(msg)
+                        continue
+
+                    self.save_config()
                     if log:
-                        logger.info(f"config override IGNORED: {key} --> {value}")
+                        msg = f"config override (new key): {key} --> {value}"
+                        logger.info(msg)
+                        file_messages.append(msg)
                     continue
 
-                self.save_config()
+                self.set_config(key, value, print=False)
+                actual_value = self.get_config(
+                    key, print=False
+                )  # ensure that key has been set, raises an exception otherwise
                 if log:
-                    logger.info(f"config override (new key): {key} --> {value}")
-                continue
-
-            self.set_config(key, value, print=False)
-            actual_value = self.get_config(
-                key, print=False
-            )  # ensure that key has been set, raises an exception otherwise
-            if log:
-                logger.info(f"config override: {key} --> {actual_value}")
+                    msg = f"config override: {key} --> {actual_value}"
+                    logger.info(msg)
+                    file_messages.append(msg)
+        finally:
+            # Write all collected messages to file, even if processing failed
+            if file_messages:
+                with open(dest_txt, "a") as f:
+                    for msg in file_messages:
+                        print(msg, file=f)
 
     def apply_preset(self, name):
         values = self.get_preset(name)
@@ -210,6 +234,9 @@ class Config:
         dest_txt = env.ARTIFACT_DIR / CI_METADATA_DIRNAME / "presets_applied.txt"
         dest_txt.parent.mkdir(parents=True, exist_ok=True)
 
+        # Collect preset messages to write to file once
+        preset_messages = []
+
         for key, value in values.items():
             if key == "extends":
                 for extend_name in value or []:
@@ -218,11 +245,15 @@ class Config:
 
             msg = f"preset[{name}] {key} --> {value}"
             logger.info(msg)
-
-            with open(dest_txt, "a") as f:
-                print(msg, file=f)
+            preset_messages.append(msg)
 
             self.set_config(key, value, print=False)
+
+        # Write all collected preset messages to file once
+        if preset_messages:
+            with open(dest_txt, "a") as f:
+                for msg in preset_messages:
+                    print(msg, file=f)
 
     def load_presets(self, preset_dir):
         for preset_file in preset_dir.glob("*.yaml"):
@@ -616,13 +647,14 @@ def init(orchestration_dir, *, apply_config_overrides=True, apply_cluster_config
     lenient_presets = False
     try:
         ctx = click.get_current_context()
-        lenient_presets = ctx.info_name == "resolve-fournos-config"
-    except (ImportError, RuntimeError):
-        # Fallback to sys.argv when Click context is not available
-        lenient_presets = "resolve-fournos-config" in sys.argv
+        lenient_presets = ctx.invoked_subcommand in FORGE_LENIENT_STEPS
+    except (ImportError, RuntimeError) as e:
+        logger.warning(f"Couldn't check the lenient steps: {e}")
 
     if lenient_presets:
-        logging.info("Fournos resolve step detected. Applying the presets in lenient mode.")
+        logging.info(
+            "Forge lenient step detected. Initializing the configuration in a fail-safe way."
+        )
 
     project.apply_config_overrides(ignore_not_found=lenient_presets)
     project.apply_presets_from_project_args(lenient=lenient_presets)

@@ -324,34 +324,33 @@ def ci_banner(project: str, operation: str, args: list[str]):
         args: Additional arguments
     """
 
+    if os.environ.get("FORGE_FOREIGN_TESTING_PULL_NUMBER"):
+        logger.info("Forge foreign-testing detect. Skipping the forge git history banner.")
+        return
+
     base_sha = os.environ.get("PULL_BASE_SHA", "main")
     if base_sha == "main":
-        logger.warning("PULL_BASE_SHA not set. Showing the last commits from main.")
+        logger.info("PULL_BASE_SHA not set. Showing the last commits from main.")
+
     pull_sha = os.environ.get("PULL_PULL_SHA", "")
     if not pull_sha:
-        logger.warning("PULL_PULL_SHA not set. Showing the last commits from main.")
-
-    logger.info(f"Git command will be: git show --quiet --oneline {base_sha}..{pull_sha}")
+        logger.info("PULL_PULL_SHA not set. Showing the last commits up to HEAD.")
+        pull_sha = "HEAD"
 
     try:
-        result = subprocess.run(
-            ["git", "show", "--quiet", "--oneline", f"{base_sha}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        logger.info(f"Git command returncode: {result.returncode}")
-        logger.info(f"Git stdout: {result.stdout}")
-        logger.info(f"Git stderr: {result.stderr}")
+        run.run("git fetch --quiet origin main --deepen=20", check=False, timeout=30)
 
-        if result.returncode == 0:
-            lines = result.stdout.split("\n")[:10]  # head 10
-            for line in lines:
-                logger.info(line)
-        else:
+        result = run.run(
+            f"git show --quiet --oneline {base_sha}..{pull_sha} | head -20",
+            check=False,
+            timeout=30,
+        )
+        if result.returncode != 0:
             logger.warning("Could not access git history (main..) ...")
+    except subprocess.TimeoutExpired:
+        logger.warning("Git banner commands timed out after 30s, continuing CI setup")
     except Exception as e:
-        logger.warning(f"Could not access git history: {e}")
+        logger.warning(f"Git banner commands failed: {e}, continuing CI setup")
 
 
 def system_prechecks() -> bool:
@@ -373,18 +372,6 @@ def system_prechecks() -> bool:
         raise ValueError(
             f"File '{failures_file}' already exists, cannot continue. Set FORGE_IGNORE_FAILURES_FILE=1 to ignore this."
         )
-
-    # Handle OpenShift CI PR arguments (already handled by parse_and_save_pr_arguments)
-    if (
-        os.environ.get("OPENSHIFT_CI") == "true"
-        and os.environ.get("FORGE_JUMP_CI_INSIDE_JUMP_HOST") != "true"
-    ):
-        if not os.environ.get("FORGE_OPENSHIFT_CI_STEP_DIR"):
-            hostname = os.environ.get("HOSTNAME", "")
-            job_name_safe = os.environ.get("JOB_NAME_SAFE", "")
-            if hostname and job_name_safe:
-                step_dir = hostname.replace(f"{job_name_safe}-", "") + "/artifacts"
-                os.environ["FORGE_OPENSHIFT_CI_STEP_DIR"] = step_dir
 
     # Remove any old failure markers
     old_failure = artifact_path / "FAILURE.txt"
@@ -710,9 +697,9 @@ def save_pip_freeze():
             logger.warning("uv not found, cannot run pip freeze")
             return
 
-        # Run uv pip freeze using the run library
+        # Run uv pip freeze using the run library with cache disabled
         result = run.run(
-            "uv pip freeze",
+            "UV_NO_CACHE=1 uv pip freeze",
             capture_stdout=True,
             check=False,
         )

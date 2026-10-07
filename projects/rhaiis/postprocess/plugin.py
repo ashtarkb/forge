@@ -5,9 +5,9 @@ from typing import Any
 
 from projects.caliper.engine.kpi import KpiComputationStatus, KpiRecord
 from projects.caliper.engine.model import (
+    BaseTestNode,
     ParseResult,
     PostProcessingPlugin,
-    TestBaseNode,
     UnifiedRunModel,
 )
 
@@ -39,7 +39,7 @@ class RhaiisPlugin(PostProcessingPlugin):
         self.parser = RhaiisParser()
         self.kpi_handler = RhaiisKpiHandler()
 
-    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         parsed = self.parser.parse(nodes)
         nodes_by_path = {str(node.test_path): node for node in nodes}
         for record in parsed.records:

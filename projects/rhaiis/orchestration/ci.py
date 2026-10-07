@@ -9,6 +9,7 @@ import click
 import prepare_rhaiis
 import test_rhaiis
 
+from projects.caliper.orchestration.export import ensure_mlflow_destination_marker
 from projects.core.agentic.config_review import trigger_config_review_for_ci
 from projects.core.agentic.on_failure import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
@@ -68,16 +69,15 @@ def _check_pipeline_failure_and_notify() -> None:
             model_name = model_key
 
         accelerator = runtime_config.get_accelerator()
-        gpu_type = runtime_config.get_gpu_type(accelerator) or accelerator
         cluster_tag = _cfg.project.get_config("rhaiis.cluster_tag", "")
-        accelerator_key = f"{gpu_type}_{cluster_tag}".upper() if cluster_tag else gpu_type.upper()
 
         send_failure_notification(
             error=error_text,
             model=model_name,
-            accelerator=accelerator_key,
+            accelerator=accelerator,
             job_id=os.environ.get("FJOB_NAME", ""),
             slack_user=_cfg.project.get_config("tests.rhaiis.slack_user", ""),
+            owner=_cfg.project.get_config("ci_job.owner", "") or "",
             notification_vault="psap-forge-notifications",
             version=_cfg.project.get_config("tests.rhaiis.version", ""),
             cluster=cluster_tag,
@@ -126,8 +126,11 @@ def main(ctx):
     ctx.ensure_object(types.SimpleNamespace)
     test_rhaiis.init()
 
-    if ctx.invoked_subcommand != "resolve-fournos-config":
-        vault.init(runtime_config.get_vaults())
+    if ctx.invoked_subcommand == "resolve-fournos-config":
+        return
+
+    vault.init(runtime_config.get_vaults())
+    ensure_mlflow_destination_marker()
 
 
 @main.command()
@@ -171,7 +174,7 @@ def post_cleanup(ctx):
 def preflight(ctx) -> int:
     """Preflight check phase - Validate that the cluster if ready for testing."""
 
-    logger.warning("Nothing so far for the preflight check")
+    logger.info("Nothing so far for the preflight check")
 
     return 0
 

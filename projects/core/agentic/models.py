@@ -100,6 +100,8 @@ def create_llm_client(model_config: dict):
             http_client=http_client,
             # Disable streaming to match simpler request format
             streaming=False,
+            # 5-minute timeout for LLM requests
+            request_timeout=300,
         )
 
     return llm

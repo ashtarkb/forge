@@ -1,6 +1,10 @@
 import logging
 
+from projects.cluster.library.prom.collection import prepare_user_workload_monitoring
 from projects.core.library import config, env
+from projects.gpu_operator.toolbox.validate_gpu_operator_dcgm import (
+    main as validate_gpu_operator_dcgm,
+)
 from projects.llm_d.orchestration import prepare_phase, runtime_config
 
 logger = logging.getLogger(__name__)
@@ -10,6 +14,7 @@ def run_prepare_sequence() -> int:
     """Run the prepare phase sequence using global config"""
     prepare_phase.verify_oc_access()
     prepare_phase.verify_cluster_version()
+    prepare_user_workload_monitoring(during="prepare")
     prepare_phase.prepare_cert_manager()
     prepare_phase.prepare_leader_worker_set()
 
@@ -19,6 +24,7 @@ def run_prepare_sequence() -> int:
     else:
         prepare_phase.prepare_nfd()
         prepare_phase.prepare_gpu_operator()
+        validate_gpu_operator_dcgm.run()
 
     prepare_phase.prepare_rhoai_operator()
     prepare_phase.apply_datasciencecluster()

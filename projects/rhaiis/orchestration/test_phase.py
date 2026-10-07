@@ -9,13 +9,22 @@ from pathlib import Path
 import yaml
 
 from projects.core.library import env
-from projects.core.library.postprocess import run_and_postprocess, write_test_labels
+from projects.core.library.fournos_status import patch_fjob_relevant_deployments
+from projects.core.library.postprocess import create_test_metadata, run_and_postprocess
 from projects.rhaiis.orchestration import runtime_config
 
 logger = logging.getLogger(__name__)
 
 _K8S_NAME_MAX = 63
 _warnings: list[str] = []
+
+
+def _optional_phase_workload_keys(
+    workload_keys: list[str], excluded_workloads: list[str]
+) -> list[str]:
+    """Return workload keys eligible for optional warmup and profiling phases."""
+    excluded = set(excluded_workloads)
+    return [key for key in workload_keys if key not in excluded]
 
 
 def _write_manifest(manifest: dict, path: Path) -> None:
@@ -126,7 +135,9 @@ def _run_test(
     from projects.core.library import config as _cfg
 
     version = _cfg.project.get_config("tests.rhaiis.version", "")
-    run_uuid = _cfg.project.get_config("tests.rhaiis.run_uuid", "") or str(_uuid_mod.uuid4())
+    run_uuid = _cfg.project.get_config("tests.rhaiis.run_uuid", "", warn=False) or str(
+        _uuid_mod.uuid4()
+    )
     logger.info("Run UUID for this job: %s", run_uuid)
 
     import subprocess
@@ -169,7 +180,23 @@ def _run_test(
     from projects.core.library import config
 
     profiler_cfg = runtime_config.get_profiler_config()
-    profiler_enabled = profiler_cfg.get("enabled", False)
+    profiler_requested = profiler_cfg.get("enabled", False)
+    excluded_optional_phase_workloads = config.project.get_config(
+        "rhaiis.optional_phase.excluded_workloads", []
+    )
+    optional_phase_workload_keys = _optional_phase_workload_keys(
+        workload_keys, excluded_optional_phase_workloads
+    )
+    profiler_enabled = profiler_requested and bool(optional_phase_workload_keys)
+    skipped_optional_phase_workloads = [
+        key for key in workload_keys if key not in optional_phase_workload_keys
+    ]
+    if skipped_optional_phase_workloads:
+        logger.info(
+            "Configured to exclude workload(s) %s from optional warmup and profiling phases "
+            "via rhaiis.optional_phase.excluded_workloads; their normal benchmark path is unchanged",
+            skipped_optional_phase_workloads,
+        )
     run_benchmark = config.project.get_config("tests.rhaiis.run_benchmark", True)
 
     # Standalone analysis only — no deployment needed
@@ -194,20 +221,15 @@ def _run_test(
     wait_guidellm_benchmark_task._retry_config["attempts"] = max(1, benchmark_timeout // 10)
 
     try:
-        from projects.caliper.orchestration.export import precreate_mlflow_run_if_configured
-
-        mlflow_destination = precreate_mlflow_run_if_configured()
-    except Exception:
-        logger.warning("MLflow run pre-creation failed; continuing", exc_info=True)
-        mlflow_destination = None
-
-    try:
         isvc_labels = {
             "opendatahub.io/dashboard": "true",
             "deployment_uuid": run_uuid,
         }
+        profiler_ranges = None
         if profiler_enabled and engine == "vllm":
             isvc_labels["vllm-profiler/enabled"] = "true"
+            profiler_ranges = profiler_cfg["ranges"]
+            logger.info("Enabling PyTorch profiler for forward-pass range %s", profiler_ranges)
         elif profiler_enabled and engine != "vllm":
             logger.warning("Profiler is only supported with vLLM engine, skipping profiler")
             profiler_enabled = False
@@ -246,7 +268,9 @@ def _run_test(
             storage_pvc=deploy_cfg.get("storage_pvc", ""),
             model_id=model_cfg["hf_model_id"],
             service_account_name=deploy_cfg.get("service_account_name", ""),
+            supplemental_groups=deploy_cfg.get("supplemental_groups"),
             labels=isvc_labels,
+            profiler_ranges=profiler_ranges,
         )
         sr_file = env.ARTIFACT_DIR / "src" / "servingruntime.yaml"
         isvc_file = env.ARTIFACT_DIR / "src" / "inferenceservice.yaml"
@@ -258,6 +282,19 @@ def _run_test(
             servingruntime_file=str(sr_file),
             inferenceservice_file=str(isvc_file),
         )
+
+        if fjob_name:
+            _update_fjob_inference_reference(
+                fjob_name,
+                fjob_ns,
+                {
+                    "apiVersion": "serving.kserve.io/v1beta1",
+                    "kind": "InferenceService",
+                    "name": deployment_name,
+                    "namespace": namespace,
+                    "runUUID": run_uuid,
+                },
+            )
 
         logger.info("Waiting for InferenceService to be ready")
         wait_isvc_ready(
@@ -295,19 +332,15 @@ def _run_test(
                 workload_key=wl_key,
                 benchmark_timeout=benchmark_timeout,
             )
-            if profiler_enabled:
+            if profiler_enabled and wl_key in optional_phase_workload_keys:
                 logger.info("Running profiler for workload=%s", wl_key)
                 _run_profiler_step(**step_kwargs)
-            elif warmup_enabled:
+            elif warmup_enabled and wl_key in optional_phase_workload_keys:
                 logger.info("Running warmup for workload=%s", wl_key)
                 _run_warmup_step(**step_kwargs)
 
         if profiler_enabled:
-            try:
-                _upload_profiler_traces(model_cfg, gpu_type, engine_args, profiler_cfg)
-            except Exception:
-                logger.exception("Profiler trace upload failed")
-                _warnings.append("Profiler trace upload failed")
+            _upload_profiler_traces(model_cfg, gpu_type, engine_args, profiler_cfg)
 
         # Phase 2: benchmark + post-processing for ALL workloads
         trtllm_cfg = runtime_config.get_trtllm_config() if engine == "trtllm" else None
@@ -330,7 +363,6 @@ def _run_test(
                 version=version,
                 cluster_tag=cluster_tag,
                 trtllm_config=trtllm_cfg,
-                mlflow_destination=mlflow_destination,
             )
 
         try:
@@ -354,6 +386,8 @@ def _run_test(
             logger.warning("Setting MLflow metadata failed; continuing", exc_info=True)
     finally:
         _capture_and_cleanup(deployment_name, namespace)
+        if fjob_name:
+            _update_fjob_inference_reference(fjob_name, fjob_ns, None)
 
     try:
         _upload_predictor_log(run_uuid)
@@ -397,7 +431,6 @@ def _run_workload_benchmark(
     version: str,
     cluster_tag: str,
     trtllm_config: dict | None = None,
-    mlflow_destination: dict[str, str] | None = None,
 ) -> None:
     """Run benchmark and post-processing for a single workload.
 
@@ -432,7 +465,6 @@ def _run_workload_benchmark(
             accelerator_chip=gpu_type.upper(),
             run_uuid=run_uuid,
             trtllm_config=trtllm_config,
-            mlflow_destination=mlflow_destination,
         )
 
         if not run_benchmark:
@@ -453,7 +485,7 @@ def _run_workload_benchmark(
         else:
             logger.info("Running benchmark at rates=%s for workload=%s", rates, workload_key)
 
-            benchmark_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.6.0")
+            benchmark_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4")
 
             guidellm_args = runtime_config.build_guidellm_args(
                 benchmark_cfg=benchmark_cfg,
@@ -490,13 +522,12 @@ def _create_test_labels(
     accelerator_chip: str = "",
     run_uuid: str = "",
     trtllm_config: dict | None = None,
-    mlflow_destination: dict[str, str] | None = None,
 ) -> None:
     _, image_tag = runtime_config.split_image_tag(serving_image) if serving_image else ("", "")
     parts = [f"{k}: {v}" for k, v in engine_args.items()]
     for key, value in (trtllm_config or {}).items():
         formatted_value = (
-            json.dumps(value, separators=(",", ":")) if isinstance(value, (dict, list)) else value
+            json.dumps(value, separators=(",", ":")) if isinstance(value, dict | list) else value
         )
         parts.append(f"trtllm.{key}: {formatted_value}")
     runtime_args = "; ".join(parts)
@@ -519,7 +550,10 @@ def _create_test_labels(
         "run_uuid": run_uuid,
     }
 
-    write_test_labels(env.ARTIFACT_DIR, labels, mlflow_destination=mlflow_destination)
+    create_test_metadata(
+        env.ARTIFACT_DIR,
+        labels,
+    )
     logger.info("Created test labels: %s", labels)
 
 
@@ -539,7 +573,7 @@ def _set_mlflow_metadata(
     from projects.core.library import config
 
     image_name, image_tag = runtime_config.split_image_tag(serving_image)
-    guidellm_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.6.0")
+    guidellm_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4")
     benchmark_args = benchmark_cfg.get("args", {})
     tp = (
         engine_args.get("tensor-parallel-size")
@@ -663,6 +697,7 @@ def _maybe_send_success_notification(model_key: str, workload_keys: list[str]) -
         accelerator=accelerator,
         job_id=os.environ.get("FJOB_NAME", ""),
         slack_user=config.project.get_config("tests.rhaiis.slack_user", ""),
+        owner=config.project.get_config("ci_job.owner", "") or "",
         notification_vault="psap-forge-notifications",
         tp=str(tp),
         dp=str(dp),
@@ -720,7 +755,7 @@ def _run_warmup_step(
 
     warmup_cfg = config.project.get_config("rhaiis.warmup", {})
     warmup_rate = warmup_cfg.get("rate", 200)
-    warmup_max_seconds = warmup_cfg.get("max_seconds", 60)
+    warmup_max_seconds = int(workload.get("warmup", warmup_cfg.get("max_seconds", 60)))
 
     guidellm_args = runtime_config.build_guidellm_args(
         benchmark_cfg=benchmark_cfg,
@@ -736,7 +771,7 @@ def _run_warmup_step(
             endpoint_url=f"{endpoint_url}/v1",
             name=_guidellm_job_name("guidellm-warmup", workload_key, deployment_name),
             namespace=namespace,
-            image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.6.0"),
+            image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4"),
             timeout=benchmark_timeout,
             pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
             guidellm_args=guidellm_args,
@@ -778,7 +813,7 @@ def _run_profiler_step(
 
     profiler_max_seconds = profiler_cfg.get("max_seconds", 60)
 
-    for label in labels:
+    for label_index, label in enumerate(labels):
         logger.info("Profiling label=%s", label)
 
         gate_value = label if isinstance(label, str) else str(label)
@@ -786,6 +821,7 @@ def _run_profiler_step(
             name=deployment_name,
             namespace=namespace,
             gate_value=gate_value,
+            clear_traces=label_index == 0,
         )
 
         profiler_rates = profiler_cfg.get("rates", [1])
@@ -802,7 +838,7 @@ def _run_profiler_step(
                 endpoint_url=f"{endpoint_url}/v1",
                 name=_guidellm_job_name("guidellm-profiler", workload_key, deployment_name),
                 namespace=namespace,
-                image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.6.0"),
+                image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4"),
                 timeout=benchmark_timeout,
                 pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
                 guidellm_args=guidellm_args,
@@ -817,10 +853,7 @@ def _run_profiler_step(
             )
 
     logger.info("Copying profiler traces from pod")
-    try:
-        copy_profiler_traces(name=deployment_name, namespace=namespace)
-    except Exception:
-        logger.warning("Failed to copy profiler traces", exc_info=True)
+    copy_profiler_traces(name=deployment_name, namespace=namespace)
 
 
 def _derive_profiler_label(workload: dict) -> str:
@@ -860,29 +893,22 @@ def _upload_profiler_traces(
     from pathlib import Path
 
     from projects.core.library import config
-    from projects.rhaiis.postprocess.s3_dashboard import upload_profiler_traces_to_s3
+    from projects.rhaiis.postprocess.s3_dashboard import (
+        select_rank0_profiler_traces,
+        upload_profiler_traces_to_s3,
+    )
 
-    trace_files = sorted(
+    trace_files = select_rank0_profiler_traces(
         Path(env.ARTIFACT_DIR).glob("*__copy_profiler_traces/artifacts/traces/trace_*")
     )
     if not trace_files:
-        logger.info("No profiler traces to upload")
-        return
+        raise RuntimeError("No rank-0 profiler traces found to upload")
 
-    traces_dir = trace_files[0].parent
-    if len({f.parent for f in trace_files}) > 1:
-        traces_dir = Path(env.ARTIFACT_DIR) / "artifacts" / "traces_combined"
-        traces_dir.mkdir(parents=True, exist_ok=True)
-        for f in trace_files:
-            import shutil
-
-            shutil.copy2(f, traces_dir / f.name)
-    logger.info("Found %d profiler trace files in %s", len(trace_files), traces_dir)
+    logger.info("Found %d rank-0 profiler trace files across profiler captures", len(trace_files))
 
     version = config.project.get_config("tests.rhaiis.version", "")
     if not version:
-        logger.info("No version configured, skipping profiler trace upload")
-        return
+        raise ValueError("tests.rhaiis.version is required to upload profiler traces")
 
     profile_labels = profiler_cfg.get("labels", [])
     if not profile_labels:
@@ -891,7 +917,7 @@ def _upload_profiler_traces(
 
     s3_cfg = config.project.get_config("rhaiis.s3", {})
     result = upload_profiler_traces_to_s3(
-        traces_dir,
+        trace_files,
         model_name=model_cfg.get("hf_model_id", ""),
         accelerator=accelerator,
         tp_size=int(
@@ -909,9 +935,34 @@ def _upload_profiler_traces(
         dry_run=config.project.get_config("caliper.export.dry_run", False),
     )
     logger.info("Profiler trace upload result: %s", result)
+    if result.get("status") != "success":
+        raise RuntimeError("Profiler trace upload did not complete successfully")
+    if not result.get("dry_run") and result.get("uploaded") != len(trace_files):
+        raise RuntimeError(
+            f"Profiler trace upload incomplete: {result.get('uploaded', 0)} "
+            f"of {len(trace_files)} files uploaded"
+        )
 
 
-def _capture_and_cleanup(deployment_name: str, namespace: str) -> None:
+def _update_fjob_inference_reference(job_name: str, namespace: str, reference: dict | None) -> None:
+    """Keep live-log status failures visible without failing the benchmark."""
+    try:
+        patch_fjob_relevant_deployments(job_name, namespace, reference)
+    except Exception:
+        action = "clear" if reference is None else "publish"
+        logger.exception(
+            "Could not %s active inference reference on FournosJob %s", action, job_name
+        )
+        from projects.core.library.ci import add_notification_file
+
+        add_notification_file(
+            "rhaiis-inference-reference",
+            f"Could not {action} the active InferenceService reference on FournosJob "
+            f"{job_name}; check Forge test logs.",
+        )
+
+
+def _capture_and_cleanup(deployment_name: str, namespace: str) -> bool:
     from projects.rhaiis.toolbox.capture_isvc_state.main import run as capture_isvc_state
 
     logger.info("Capturing state")
@@ -925,5 +976,7 @@ def _capture_and_cleanup(deployment_name: str, namespace: str) -> None:
     logger.info("Cleaning up")
     try:
         cleanup_isvc(name=deployment_name, namespace=namespace)
+        return True
     except Exception:
         logger.warning("Cleanup failed", exc_info=True)
+        return False

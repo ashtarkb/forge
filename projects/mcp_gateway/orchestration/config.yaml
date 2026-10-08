@@ -59,6 +59,9 @@ metrics:
     - network_tx_bytes
 
 caliper:
+  replot:
+    url: null  # Set via /replot.url directive
+    keep: false  # Set to true to keep download directory after replotting
   postprocess:
     enabled: true
     artifacts_dir: null

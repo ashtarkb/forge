@@ -253,10 +253,18 @@ def wait_service_mesh_ready(args, ctx):
 
 @task
 def install_connectivity_link_operator(args, ctx):
-    """Apply Connectivity Link operator via kustomize and wait for CRDs"""
+    """Apply Connectivity Link operator via kustomize and wait for CRDs.
+
+    Cleans up stale/failed CSVs from previous runs before applying the
+    subscription.  OLM will not install a fresh operator if failed CSVs
+    from a prior incomplete cleanup still exist in the namespace.
+    """
     step = find_step(ctx.steps, "connectivity-link-operator")
     if not step:
         return "Step connectivity-link-operator not found, skipping"
+
+    # Clean stale CSVs that may block OLM from installing the operator
+    _cleanup_stale_connectivity_link_csvs("kuadrant-system")
 
     kustomize_path = ctx.kustomize_base / step["path"]
     if not kustomize_path.exists():
@@ -671,6 +679,62 @@ def _parse_mem_to_bytes(mem: str) -> int:
         if mem.endswith(suffix):
             return int(mem[: -len(suffix)]) * multiplier
     return int(mem)
+
+
+def _cleanup_stale_connectivity_link_csvs(namespace: str) -> None:
+    """Remove stale/failed CSVs that block OLM from installing the operator.
+
+    Previous MCP-GW runs may leave failed CSVs (authorino-operator,
+    limitador-operator, dns-operator, rhcl-operator) that prevent OLM
+    from creating a new InstallPlan.  Strip finalizers and delete them.
+    """
+    from projects.core.dsl.utils.k8s import best_effort_oc, oc_resource_exists
+
+    if not oc_resource_exists("namespace", namespace):
+        return
+
+    result = oc(
+        "get",
+        "csv",
+        "-n",
+        namespace,
+        "-o",
+        'jsonpath={range .items[*]}{.metadata.name} {.status.phase}{"\\n"}{end}',
+        check=False,
+        log_stdout=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return
+
+    prefixes = ("authorino-operator", "limitador-operator", "dns-operator", "rhcl-operator")
+    for line in result.stdout.strip().splitlines():
+        parts = line.strip().split()
+        if len(parts) < 2:
+            continue
+        csv_name, phase = parts[0], parts[1]
+        if not any(csv_name.startswith(p) for p in prefixes):
+            continue
+        if phase == "Failed":
+            logger.info("Removing stale Failed CSV %s from %s", csv_name, namespace)
+            best_effort_oc(
+                "patch",
+                "csv",
+                csv_name,
+                "-n",
+                namespace,
+                "--type=merge",
+                "-p",
+                '{"metadata":{"finalizers":null}}',
+            )
+            best_effort_oc(
+                "delete",
+                "csv",
+                csv_name,
+                "-n",
+                namespace,
+                "--ignore-not-found=true",
+                "--wait=false",
+            )
 
 
 if __name__ == "__main__":

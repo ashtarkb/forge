@@ -27,6 +27,7 @@ from projects.core.dsl.utils.k8s import oc, oc_apply, oc_get_json
 from projects.core.library import env
 from projects.core.orchestration.utils.k8s import ensure_namespace
 from projects.mcp_gateway.toolbox.platform_helpers import (
+    detect_highest_supported_istio_version,
     detect_mcp_gateway_extension_crd_spec,
     find_step,
     patch_service_mesh_istio_version,
@@ -74,7 +75,20 @@ def validate_config(args, ctx):
     ctx.inst = config.get("mcp_gateway_instance", {})
     ctx.steps = config.get("steps", [])
     # Override upstream EOL pin (v1.26-latest) so Sail/OSSM 3 will install.
-    ctx.istio_version = config.get("istio_version", "v1.30-latest")
+    # "auto" detects the highest version supported by the cluster's Sail CRD.
+    istio_version = config.get("istio_version", "auto")
+    if istio_version == "auto":
+        detected = detect_highest_supported_istio_version()
+        if detected:
+            istio_version = detected
+            logger.info("Auto-detected Istio version from CRD: %s", istio_version)
+        else:
+            istio_version = "v1.27-latest"
+            logger.warning(
+                "Could not auto-detect Istio version, falling back to %s",
+                istio_version,
+            )
+    ctx.istio_version = istio_version
 
     wait_for_namespace_termination([ctx.mcp_gateway_namespace, ctx.gateway_namespace])
 

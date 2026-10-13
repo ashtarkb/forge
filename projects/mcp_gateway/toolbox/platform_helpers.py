@@ -28,7 +28,8 @@ _PLATFORM_CLONE_DIR = Path(os.environ.get("FORGE_BASE_DIR", "/tmp")) / "mcp-gw-p
 
 # Upstream mcp-gateway still pins EOL Istio (v1.26-latest). Current
 # servicemeshoperator3 / Sail rejects that for new installs.
-_DEFAULT_ISTIO_VERSION = "v1.30-latest"
+# Fallback when auto-detection is unavailable.
+_DEFAULT_ISTIO_VERSION = "v1.27-latest"
 _ISTIO_VERSION_RE = re.compile(r"^(\s*version:\s*)\S+\s*$", re.MULTILINE)
 
 
@@ -410,6 +411,90 @@ def _force_remove_namespace_finalizers(namespace: str) -> None:
         logger.info("Removed finalizers from namespace %s", namespace)
     except Exception as exc:
         logger.warning("Failed to remove finalizers from %s: %s", namespace, exc)
+
+
+def detect_highest_supported_istio_version() -> str | None:
+    """Query the Istio CRD on the cluster and return the highest supported version.
+
+    Reads the ``spec.version`` enum from the ``istios.sailoperator.io`` CRD
+    and returns the highest ``vX.Y-latest`` entry.  Falls back to the highest
+    specific version (e.g. ``v1.27.3``) if no ``-latest`` entries exist.
+
+    Returns None if the CRD doesn't exist or the version enum can't be parsed.
+    """
+    import json as json_mod
+
+    result = oc(
+        "get",
+        "crd",
+        "istios.sailoperator.io",
+        "-o",
+        "json",
+        check=False,
+        log_stdout=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        logger.warning("Could not read istios.sailoperator.io CRD for version detection")
+        return None
+
+    try:
+        crd = json_mod.loads(result.stdout)
+    except Exception:
+        logger.warning("Failed to parse istios.sailoperator.io CRD JSON")
+        return None
+
+    # Walk the CRD schema to find the version enum
+    for api_version in crd.get("spec", {}).get("versions", []):
+        version_enum = (
+            api_version.get("schema", {})
+            .get("openAPIV3Schema", {})
+            .get("properties", {})
+            .get("spec", {})
+            .get("properties", {})
+            .get("version", {})
+            .get("enum", [])
+        )
+        if version_enum:
+            # Filter out None values
+            versions = [v for v in version_enum if v]
+            if not versions:
+                continue
+
+            # Prefer vX.Y-latest entries
+            latest_versions = [v for v in versions if v.endswith("-latest")]
+            if latest_versions:
+                latest_versions.sort(key=_version_sort_key, reverse=True)
+                logger.info(
+                    "Auto-detected highest Istio version: %s (from %s)",
+                    latest_versions[0],
+                    versions,
+                )
+                return latest_versions[0]
+
+            # Fall back to highest specific version
+            versions.sort(key=_version_sort_key, reverse=True)
+            logger.info(
+                "Auto-detected highest Istio version: %s (from %s)",
+                versions[0],
+                versions,
+            )
+            return versions[0]
+
+    logger.warning("Could not find version enum in istios.sailoperator.io CRD")
+    return None
+
+
+def _version_sort_key(version: str) -> tuple:
+    """Extract a sortable tuple from an Istio version string like 'v1.27-latest' or 'v1.27.3'."""
+    # Strip leading 'v' and trailing '-latest'
+    v = version.lstrip("v").replace("-latest", ".9999")
+    parts = []
+    for p in v.split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
 
 
 def patch_service_mesh_istio_version(

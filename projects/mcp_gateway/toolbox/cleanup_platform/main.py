@@ -80,14 +80,38 @@ def uninstall_mcp_gateway_helm(args, ctx):
 
 @task
 def delete_kuadrant_cr(args, ctx):
-    """Delete the Kuadrant CR (Connectivity Link instance)"""
+    """Delete the Kuadrant CR (Connectivity Link instance).
+
+    The Kuadrant CR has a finalizer (kuadrant.io/developerportal) that
+    requires the operator to be running to resolve.  If the operator is
+    already gone or its pods have been scaled down, the delete will hang
+    indefinitely.  Strip the finalizer first, then delete.
+    """
     step = find_step(ctx.steps, "connectivity-link-instance")
     if not step:
         return "No connectivity-link-instance step, skipping"
 
     ns = step.get("namespace", ctx.mcp_gateway_namespace)
+
+    # Strip finalizers first — the operator may already be gone
     best_effort_oc(
-        "delete", "kuadrant", "kuadrant", "-n", ns, "--ignore-not-found=true", "--timeout=120s"
+        "patch",
+        "kuadrant",
+        "kuadrant",
+        "-n",
+        ns,
+        "--type=merge",
+        "-p",
+        '{"metadata":{"finalizers":null}}',
+    )
+    best_effort_oc(
+        "delete",
+        "kuadrant",
+        "kuadrant",
+        "-n",
+        ns,
+        "--ignore-not-found=true",
+        "--wait=false",
     )
     return f"Kuadrant CR deleted from {ns}"
 
@@ -146,13 +170,22 @@ def delete_mcp_gateway_controller(args, ctx):
 
 @task
 def delete_connectivity_link_operator(args, ctx):
-    """Remove Connectivity Link operator kustomize resources"""
+    """Remove Connectivity Link operator kustomize resources and stale CSVs.
+
+    OLM auto-updates can leave failed CSVs (authorino-operator, limitador-operator,
+    dns-operator, rhcl-operator) that block fresh installs.  Remove them explicitly.
+    """
     step = find_step(ctx.steps, "connectivity-link-operator")
     if not step:
         return "No connectivity-link-operator step, skipping"
 
     _delete_kustomize_step(step, ctx)
-    return "Connectivity Link operator removed"
+
+    # Clean up stale/failed CSVs left by the Connectivity Link operator chain
+    _cleanup_stale_csvs("kuadrant-system")
+    _cleanup_stale_csvs(ctx.mcp_gateway_namespace)
+
+    return "Connectivity Link operator and stale CSVs removed"
 
 
 @task
@@ -343,6 +376,43 @@ def _delete_kustomize_step(step: dict, ctx) -> None:
         return
 
     best_effort_oc("delete", "-k", str(kustomize_path), "--ignore-not-found=true")
+
+
+def _cleanup_stale_csvs(namespace: str) -> None:
+    """Remove CSVs related to Connectivity Link operators in a namespace.
+
+    Failed or superseded CSVs for authorino, limitador, dns-operator, and
+    rhcl-operator can prevent fresh installs if left behind.
+    """
+    if not oc_resource_exists("namespace", namespace):
+        return
+
+    result = oc(
+        "get",
+        "csv",
+        "-n",
+        namespace,
+        "-o",
+        'jsonpath={range .items[*]}{.metadata.name}{"\\n"}{end}',
+        check=False,
+        log_stdout=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return
+
+    prefixes = ("authorino-operator", "limitador-operator", "dns-operator", "rhcl-operator")
+    for csv_name in result.stdout.strip().splitlines():
+        csv_name = csv_name.strip()
+        if csv_name and any(csv_name.startswith(p) for p in prefixes):
+            best_effort_oc(
+                "delete",
+                "csv",
+                csv_name,
+                "-n",
+                namespace,
+                "--ignore-not-found=true",
+            )
+            logger.info("Removed CSV %s from %s", csv_name, namespace)
 
 
 def _sail_resource_exists(kind: str, name: str) -> bool:

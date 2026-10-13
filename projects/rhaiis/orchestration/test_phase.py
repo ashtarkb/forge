@@ -62,9 +62,6 @@ def run(
         logger.exception("Dashboard CSV S3 sync after postprocessing failed")
         ret = 1
 
-    if ret == 0:
-        _maybe_send_success_notification(model_key, workload_keys)
-
     return ret
 
 
@@ -75,20 +72,14 @@ def do_test(
     namespace: str,
     deployment_name: str | None = None,
 ) -> int:
-    try:
-        dir_name = f"test_{model_key}_{'_'.join(workload_keys)}"
-        with env.NextArtifactDir(dir_name):
-            return _run_test(
-                model_key=model_key,
-                workload_keys=workload_keys,
-                namespace=namespace,
-                deployment_name=deployment_name,
-            )
-    except Exception as exc:
-        from projects.rhaiis.orchestration.notifications import send_pipeline_failure_alert
-
-        send_pipeline_failure_alert(exc, model_key=model_key, workload_keys=workload_keys)
-        raise
+    dir_name = f"test_{model_key}_{'_'.join(workload_keys)}"
+    with env.NextArtifactDir(dir_name):
+        return _run_test(
+            model_key=model_key,
+            workload_keys=workload_keys,
+            namespace=namespace,
+            deployment_name=deployment_name,
+        )
 
 
 def _run_test(
@@ -138,6 +129,7 @@ def _run_test(
     run_uuid = _cfg.project.get_config("tests.rhaiis.run_uuid", "", warn=False) or str(
         _uuid_mod.uuid4()
     )
+    _cfg.project.set_config("tests.rhaiis.run_uuid", run_uuid)
     logger.info("Run UUID for this job: %s", run_uuid)
 
     import subprocess
@@ -399,13 +391,6 @@ def _run_test(
         logger.warning(
             "Test completed with %d warning(s): %s", len(_warnings), "; ".join(_warnings)
         )
-        from projects.rhaiis.orchestration.notifications import send_pipeline_warning
-
-        send_pipeline_warning(
-            warnings=list(_warnings),
-            model_key=model_key,
-            workload_keys=workload_keys,
-        )
         _warnings.clear()
         return 1
 
@@ -663,49 +648,13 @@ def _sync_postprocessed_dashboard_csv(model_key: str, workload_keys: list[str]) 
             version,
             model_cfg,
             accelerator,
-            run_uuid="",
+            run_uuid=(
+                config.project.get_config("tests.rhaiis.run_uuid", "", warn=False)
+                or os.environ.get("FJOB_NAME", "")
+            ),
             engine_args=ea,
         )
         return
-
-
-def _maybe_send_success_notification(model_key: str, workload_keys: list[str]) -> None:
-    """Send a Slack success notification if slack_notify_always is set and no regression check."""
-    from projects.core.library import config
-
-    compare_version = config.project.get_config("tests.rhaiis.compare_version", "")
-    if compare_version:
-        return
-
-    if not config.project.get_config("tests.rhaiis.slack_notify_always", False):
-        return
-
-    from projects.rhaiis.postprocess.regression import send_success_notification
-
-    model_cfg = runtime_config.get_model(model_key)
-    accelerator = runtime_config.get_accelerator()
-    engine = runtime_config.get_engine()
-    engine_defaults = runtime_config.get_engine_args(engine)
-    first_workload = runtime_config.get_workload(workload_keys[0])
-    ea = runtime_config.merge_engine_args(engine_defaults, model_cfg, first_workload, engine)
-    tp = ea.get("tensor-parallel-size") or ea.get("tp-size") or ea.get("tp_size") or ""
-    dp = ea.get("data-parallel-size") or ea.get("dp-size") or ""
-    version = config.project.get_config("tests.rhaiis.version", "")
-
-    send_success_notification(
-        model=model_cfg.get("hf_model_id", ""),
-        accelerator=accelerator,
-        job_id=os.environ.get("FJOB_NAME", ""),
-        slack_user=config.project.get_config("tests.rhaiis.slack_user", ""),
-        owner=config.project.get_config("ci_job.owner", "") or "",
-        notification_vault="psap-forge-notifications",
-        tp=str(tp),
-        dp=str(dp),
-        version=version,
-        workload_keys=workload_keys,
-        cluster=config.project.get_config("rhaiis.cluster_tag", ""),
-        engine=engine,
-    )
 
 
 def _upload_predictor_log(run_uuid: str) -> None:

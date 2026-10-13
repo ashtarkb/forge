@@ -33,6 +33,7 @@ from projects.caliper.orchestration.postprocess_config import (
 from projects.caliper.orchestration.postprocess_outcome import TestPhaseOutcome
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env
+from projects.core.library.ci import ExitCategory
 from projects.core.library.reports_index import generate_caliper_reports_index
 from projects.core.library.status_to_html import convert_status_yaml_to_html
 
@@ -329,19 +330,17 @@ def run_and_postprocess(test_func, *args, **kwargs):
         except Exception as postprocess_exc:
             logger.exception("Caliper postprocess after test failed with exception")
             if original_exc is not None:
-                # Both test and postprocess failed: chain so both are visible in the traceback
                 raise postprocess_exc from original_exc
 
-            # Only postprocess failed: return failure code instead of raising
             logger.error(
                 "Test succeeded but postprocessing failed with exception - returning exit code 1"
             )
-            return 1
+            return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing exception: {postprocess_exc}"
 
 
 def _handle_postprocess_failure(
     status: dict, original_exc: BaseException | None, final_status: str
-) -> int | None:
+) -> tuple[int, ExitCategory, str] | None:
     """Handle postprocessing failure logic.
 
     Args:
@@ -350,37 +349,31 @@ def _handle_postprocess_failure(
         final_status: Final status from postprocessing
 
     Returns:
-        Exit code to return, or None to re-raise original exception
+        (return_code, ExitCategory, reason) tuple, or None to re-raise original exception
     """
-    # Check if failure is only due to warnings
     if _is_warnings_only_failure(status):
         if original_exc is not None:
-            # Test failed, postprocess has warnings: still fail due to test
             logger.error(
                 "Test failed and postprocessing completed with warnings (final_status: %s)",
                 final_status,
             )
-            return None  # Signal to re-raise original exception
+            return None
         else:
-            # Test succeeded, postprocess has warnings only: treat as success
             logger.warning(
                 "Test succeeded and postprocessing completed with warnings (final_status: %s) - returning exit code 0",
                 final_status,
             )
-            return 0
+            return 0, ExitCategory.SUCCESS, ""
     else:
-        # Actual postprocessing failures (not just warnings)
         if original_exc is not None:
-            # Both test and postprocess failed: log both issues
             logger.error("Both test and postprocessing failed (final_status: %s)", final_status)
-            return None  # Signal to re-raise original exception
+            return None
         else:
-            # Only postprocess failed: return failure code
             logger.error(
                 "Test succeeded but postprocessing failed (final_status: %s) - returning exit code 1",
                 final_status,
             )
-            return 1
+            return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing failed: {final_status}"
 
 
 def _is_warnings_only_failure(status: dict) -> bool:
@@ -567,10 +560,9 @@ def postprocess_command(_ctx, artifact_dir: Path, output_dir: Path):
     # Check success flag and return appropriate exit code
     success = status.get("success", False)
     if not success:
+        final_status = status.get("final_status", "unknown")
         logger.error(
             "Postprocessing failed (final_status: %s) - returning exit code 1",
-            status.get("final_status", "unknown"),
+            final_status,
         )
-        return 1
-
-    return 0
+        return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing failed: {final_status}"

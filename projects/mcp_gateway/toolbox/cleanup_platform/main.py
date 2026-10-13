@@ -58,14 +58,23 @@ def resolve_config(args, ctx):
 
 @task
 def uninstall_mcp_gateway_helm(args, ctx):
-    """Uninstall MCP Gateway Helm releases"""
+    """Uninstall MCP Gateway Helm releases.
+
+    The mcp-gateway chart may install under different release names and
+    namespaces depending on the chart version.  Try all known combinations
+    to ensure nothing is left behind.
+    """
     if not has_step(ctx.steps, "mcp-gateway-instance"):
         return "No helm step, skipping"
 
+    # Primary release: mcp-gateway in the mcp-system namespace
     best_effort_cmd("helm", "uninstall", "mcp-gateway", "--namespace", ctx.mcp_gateway_namespace)
+    # Legacy/alternate release in gateway-system
     best_effort_cmd(
         "helm", "uninstall", "mcp-gateway-ingress", "--namespace", ctx.gateway_namespace
     )
+    # Some chart versions create the release in gateway-system directly
+    best_effort_cmd("helm", "uninstall", "mcp-gateway", "--namespace", ctx.gateway_namespace)
     return "Helm releases uninstalled"
 
 
@@ -169,6 +178,80 @@ def delete_service_mesh_operator(args, ctx):
 
 
 @task
+def delete_mcp_istio_resources(args, ctx):
+    """Explicitly remove MCP-owned Istio/IstioCNI/IstioRevision resources.
+
+    The kustomize-based cleanup may skip these if the platform clone is
+    unavailable.  This task ensures they are always removed regardless of
+    the kustomize path, preventing stale webhooks and reconcile errors
+    from affecting other cluster tenants (e.g. RHOAI).
+
+    Only deletes the ``default`` instances created by MCP-GW; the
+    RHOAI-managed ``openshift-gateway`` instance is never touched.
+    """
+    import time
+
+    # MCP-GW creates these specific resources
+    mcp_resources = [
+        ("istio", "default"),
+        ("istiocni", "default"),
+        ("istiorevision", "default"),
+    ]
+
+    deleted = []
+    for kind, name in mcp_resources:
+        if not _sail_resource_exists(kind, name):
+            continue
+
+        # Strip finalizers first to avoid hanging on deletion
+        oc(
+            "patch",
+            kind,
+            name,
+            "--type=merge",
+            "-p",
+            '{"metadata":{"finalizers":null}}',
+            check=False,
+        )
+        best_effort_oc(
+            "delete",
+            kind,
+            name,
+            "--ignore-not-found=true",
+            "--wait=false",
+        )
+        deleted.append(f"{kind}/{name}")
+
+    # Wait for deletions to complete
+    if deleted:
+        deadline = time.time() + 120
+        for kind, name in mcp_resources:
+            while time.time() < deadline and _sail_resource_exists(kind, name):
+                time.sleep(5)
+            if _sail_resource_exists(kind, name):
+                logger.warning("%s/%s still present after timeout", kind, name)
+
+    # Remove any stale validating webhook targeting istiod.istio-system
+    _remove_stale_istio_system_webhooks()
+
+    # Remove the MCP Gateway object in gateway-system (owns the LB Service)
+    if oc_resource_exists("namespace", "gateway-system"):
+        best_effort_oc(
+            "delete",
+            "gateway",
+            "mcp-gateway",
+            "-n",
+            "gateway-system",
+            "--ignore-not-found=true",
+            "--wait=false",
+        )
+
+    if deleted:
+        return f"Removed MCP Istio resources: {', '.join(deleted)}"
+    return "No MCP Istio resources found (already clean)"
+
+
+@task
 def delete_namespaces(args, ctx):
     """Remove platform namespaces and wait for them to fully terminate"""
     from projects.mcp_gateway.toolbox.platform_helpers import wait_for_namespace_termination
@@ -260,6 +343,57 @@ def _delete_kustomize_step(step: dict, ctx) -> None:
         return
 
     best_effort_oc("delete", "-k", str(kustomize_path), "--ignore-not-found=true")
+
+
+def _sail_resource_exists(kind: str, name: str) -> bool:
+    """Check whether a Sail operator resource (istio/istiocni/istiorevision) exists."""
+    result = oc("get", kind, name, check=False, log_stdout=False)
+    return result.returncode == 0
+
+
+def _remove_stale_istio_system_webhooks() -> None:
+    """Remove validating webhook configurations that reference istiod.istio-system.
+
+    When the MCP-GW Istio instance is deleted but the namespace disappears
+    first, the operator-generated webhook can be left behind pointing to a
+    non-existent service.  This causes ``failurePolicy: Fail`` rejections
+    for any Istio resource on the cluster, breaking other tenants.
+    """
+    import json as json_mod
+
+    result = oc(
+        "get",
+        "validatingwebhookconfiguration",
+        "-o",
+        "json",
+        check=False,
+        log_stdout=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return
+
+    try:
+        items = json_mod.loads(result.stdout).get("items", [])
+    except Exception:
+        logger.warning("Failed to parse validating webhook configurations")
+        return
+
+    for vwc in items:
+        vwc_name = vwc.get("metadata", {}).get("name", "")
+        for wh in vwc.get("webhooks", []):
+            svc = wh.get("clientConfig", {}).get("service", {})
+            if svc.get("namespace") == "istio-system" and svc.get("name") == "istiod":
+                logger.info(
+                    "Removing stale webhook %s (references istiod.istio-system)",
+                    vwc_name,
+                )
+                best_effort_oc(
+                    "delete",
+                    "validatingwebhookconfiguration",
+                    vwc_name,
+                    "--ignore-not-found=true",
+                )
+                break  # move to next VWC
 
 
 def _remove_finalizers_for_crd(crd_name: str) -> None:

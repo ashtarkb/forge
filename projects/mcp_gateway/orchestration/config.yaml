@@ -28,7 +28,21 @@ vaults:
   - psap-forge-mlflow-export
   - psap-forge-aws-s3-export
   prepare: []
+  prepare-optional: []
+  preflight: []
+  preflight-optional: []
   test: []
+  test-optional: []
+  pre-cleanup: []
+  pre-cleanup-optional: []
+  post-cleanup: []
+  post-cleanup-optional: []
+  export-artifacts: []
+  export-artifacts-optional: []
+  nightly: []
+  nightly-optional: []
+  replot: []
+  replot-optional: []
 
 notifications:
   slack:
